@@ -102,22 +102,6 @@ def generate_launch_description():
         ),
 
         # =========================
-        # 临时 TF：odom → base_footprint
-        # （STM32 真实数据验证通过后删除此项）
-        # =========================
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='odom_to_base_footprint',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'odom',
-                'base_footprint'
-            ]
-        ),
-
-        # =========================
         # 核心：SLAM Toolbox
         # =========================
         IncludeLaunchDescription(

@@ -18,6 +18,7 @@ restart_everything() {
     pkill -9 -f async_slam_toolbox_node 2>/dev/null
     pkill -9 -f robot_state_publisher 2>/dev/null
     pkill -9 -f static_transform_publisher 2>/dev/null
+    pkill -9 -f stm32_bridge_node 2>/dev/null
     sleep 3
     nohup bash -c 'source /opt/ros/humble/setup.bash; source /home/sunrise/robot_ws/install/setup.bash; ros2 launch robot_bringup robot_core.launch.py' > /home/sunrise/robot_ws/logs/core.log 2>&1 &
     sleep 12

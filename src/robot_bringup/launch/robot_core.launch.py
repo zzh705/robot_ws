@@ -7,12 +7,19 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+
+    stm32_bridge_launch = os.path.join(
+        get_package_share_directory('stm32_bridge'),
+        'launch',
+        'stm32_bridge.launch.py'
+    )
 
     rplidar_launch = os.path.join(
         get_package_share_directory('rplidar_ros'),
@@ -36,6 +43,12 @@ def generate_launch_description():
 
     return LaunchDescription([
 
+        DeclareLaunchArgument(
+            'stm32_port',
+            default_value='/dev/ttyACM0',
+            description='STM32 串口设备路径'
+        ),
+
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rplidar_launch)
         ),
@@ -44,22 +57,17 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(robot_description_launch)
         ),
 
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='odom_to_base_footprint',
-            arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'odom',
-                'base_footprint'
-            ]
-        ),
-
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(slam_launch),
             launch_arguments={
                 'slam_params_file': slam_config
+            }.items()
+        ),
+
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(stm32_bridge_launch),
+            launch_arguments={
+                'port': LaunchConfiguration('stm32_port')
             }.items()
         )
 
