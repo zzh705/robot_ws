@@ -9,7 +9,7 @@ setup(
     data_files=[
         (
             'share/ament_index/resource_index/packages',
-            ['resource_' + package_name]
+            ['resource/' + package_name]
         ),
         (
             'share/' + package_name,
