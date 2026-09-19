@@ -39,7 +39,7 @@ def generate_launch_description():
         'online_async_launch.py'
     )
 
-    slam_config = '/home/sunrise/robot_ws/config/mapper_params_online_async.yaml'
+    slam_config = LaunchConfiguration('slam_config')
 
     return LaunchDescription([
 
@@ -47,6 +47,11 @@ def generate_launch_description():
             'stm32_port',
             default_value='/dev/ttyACM0',
             description='STM32 串口设备路径'
+        ),
+        DeclareLaunchArgument(
+            'slam_config',
+            default_value='/home/sunrise/robot_ws/config/mapper_params_online_async.yaml',
+            description='SLAM 参数文件路径'
         ),
 
         IncludeLaunchDescription(

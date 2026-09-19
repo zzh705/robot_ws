@@ -5,3 +5,9 @@ logs/
 *.pyc
 __pycache__/
 *.tar.gz
+
+# 大文件不纳入版本控制及备份
+*.sql
+gui_*
+voice_input.wav
+library_gui/voice/whisper.cpp/

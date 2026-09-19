@@ -59,9 +59,9 @@ def generate_launch_description():
         'stm32_bridge.launch.py'
     )
 
-    slam_config = '/home/sunrise/robot_ws/config/mapper_params_online_async.yaml'
-    rviz_config = '/home/sunrise/robot_ws/config/robot.rviz'
-    watchdog_script = '/home/sunrise/robot_ws/scripts/lidar_watchdog.sh'
+    slam_config = LaunchConfiguration('slam_config')
+    rviz_config = LaunchConfiguration('rviz_config')
+    watchdog_script = LaunchConfiguration('watchdog_script')
 
     # =========================
     # STM32 串口设备路径参数
@@ -80,11 +80,28 @@ def generate_launch_description():
         default_value='true',
         description='是否启用雷达 USB 看护（测试时设为 false）'
     )
+    slam_config_arg = DeclareLaunchArgument(
+        'slam_config',
+        default_value='/home/sunrise/robot_ws/config/mapper_params_online_async.yaml',
+        description='SLAM 参数文件路径'
+    )
+    rviz_config_arg = DeclareLaunchArgument(
+        'rviz_config',
+        default_value='/home/sunrise/robot_ws/config/robot.rviz',
+        description='RViz 配置文件路径'
+    )
+    watchdog_script_arg = DeclareLaunchArgument(
+        'watchdog_script',
+        default_value='/home/sunrise/robot_ws/scripts/lidar_watchdog.sh',
+        description='雷达看护脚本路径'
+    )
 
     return LaunchDescription([
-
         stm32_port_arg,
         enable_watchdog_arg,
+        slam_config_arg,
+        rviz_config_arg,
+        watchdog_script_arg,
 
         # =========================
         # 核心：RPLIDAR
