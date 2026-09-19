@@ -1,14 +1,16 @@
 from book_ai import search_books
 import requests
+from env_loader import load_env
 
 
 # ============================================================
-# Ollama 配置
+# Ollama 配置(取自 .env, 可用环境变量覆盖)
 # ============================================================
 
-OLLAMA_HOST = "10.1.27.7"
-OLLAMA_PORT = 11434
-OLLAMA_MODEL = "deepseek-r1:1.5b"
+_CFG = load_env()
+OLLAMA_HOST = _CFG.get('OLLAMA_HOST', '10.1.27.7')
+OLLAMA_PORT = int(_CFG.get('OLLAMA_PORT', '11434'))
+OLLAMA_MODEL = _CFG.get('OLLAMA_MODEL', 'deepseek-r1:1.5b')
 
 OLLAMA_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
 

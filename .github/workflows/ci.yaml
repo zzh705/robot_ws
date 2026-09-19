@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  py-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax check (ast)
+        run: |
+          set -e
+          # 递归检查 src 下所有 .py 与 launch 脚本是否语法合法
+          find src library_gui -name '*.py' -print0 | xargs -0 -I{} python3 -c "
+import ast, sys
+try:
+    ast.parse(open('{}', encoding='utf-8').read())
+except SyntaxError as e:
+    print('SYNTAX_ERROR in {}: {}'.format('{}', e))
+    sys.exit(1)
+print('OK {}'.format('{}'))
+"
+          echo "ALL_PY_SYNTAX_OK"
+
+      - name: Shell script style (bash -n)
+        run: |
+          for f in scripts/*.sh library_gui/*.sh; do
+            [ -f "$f" ] && bash -n "$f" && echo "OK $f"
+          done
+          echo "ALL_SH_SYNTAX_OK"

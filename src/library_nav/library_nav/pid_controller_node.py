@@ -129,9 +129,10 @@ class PIDControllerNode(Node):
 
         # ---------- 软启动斜坡: 限制每周期(0.1s)输出变化量 ----------
         # 电机启动瞬间电流冲击会拉垮供电, 用斜坡把 PWM 从 0 缓慢爬升。
-        # 默认每周期最大变化 0.03 → 0.15 需约 0.5s, 启动电流平缓。
-        self.declare_parameter('slew_v', 0.03)  # 线速度斜坡 m/cycle
-        self.declare_parameter('slew_w', 0.06)  # 角速度斜坡 rad/cycle
+        # 与 DWA acc_x/acc_w 对齐(避免 PID 抢先限住 DWA 请求的速度):
+        #   slew_v=0.04 → 0.4 m/s², slew_w=0.08 → 0.8 rad/s²
+        self.declare_parameter('slew_v', 0.04)  # 线速度斜坡 m/cycle
+        self.declare_parameter('slew_w', 0.08)  # 角速度斜坡 rad/cycle
         self.slew_v = self.get_parameter('slew_v').value
         self.slew_w = self.get_parameter('slew_w').value
         self.prev_cmd_vx = 0.0

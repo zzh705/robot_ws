@@ -56,6 +56,22 @@ RUN_NAV="${RUN_NAV:-0}"
 
 mkdir -p "${LOG_DIR}"
 
+# 日志轮转: 单文件超 5MB 时压缩为 .1.gz, 依次顺延, 最多保留 3 份
+rotate_logs() {
+    for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${LOG_DIR}/nav.log"; do
+        [ -f "$f" ] || continue
+        size_k="$(du -k "$f" 2>/dev/null | awk '{print $1}')"
+        [ "${size_k:-0}" -gt 5120 ] || continue
+        i=3
+        while [ "$i" -gt 1 ]; do
+            [ -f "$f.$((i-1)).gz" ] && mv -f "$f.$((i-1)).gz" "$f.$i.gz"
+            i=$((i-1))
+        done
+        gzip -c "$f" > "$f.1.gz" 2>/dev/null
+        : > "$f"
+    done
+}
+
 log() {
     echo "$(date '+%F %T') $*" >> "${MAIN_LOG}"
     echo "$(date '+%F %T') $*"
@@ -275,6 +291,9 @@ status_all() {
 # ------------------------------------------------------------
 #  入口
 # ------------------------------------------------------------
+
+# 启动前先做日志轮转, 防止日志无限增长
+rotate_logs
 
 case "${1:-start}" in
     start)

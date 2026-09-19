@@ -1,5 +1,8 @@
 import pymysql
 from dbutils.pooled_db import PooledDB
+from env_loader import load_env
+
+_CFG = load_env()
 
 class DatabasePool:
     """数据库连接池"""
@@ -11,10 +14,10 @@ class DatabasePool:
             mincached=2,
             maxcached=5,
             blocking=True,
-            host='localhost',
-            user='library',
-            password='library123',
-            database='books',
+            host=_CFG.get('DB_HOST', 'localhost'),
+            user=_CFG.get('DB_USER', 'library'),
+            password=_CFG.get('DB_PASSWORD', 'library123'),
+            database=_CFG.get('DB_NAME', 'books'),
             charset='utf8mb4',
             autocommit=True
         )

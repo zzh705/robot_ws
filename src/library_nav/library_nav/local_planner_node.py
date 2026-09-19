@@ -34,8 +34,8 @@ class DWAController(Node):
         self.declare_parameter('max_vx', 0.4)      # 最大前进速度 m/s
         self.declare_parameter('min_vx', 0.0)     # 最小速度(禁止倒车: 倒车会诱发"原地后退打转")
         self.declare_parameter('max_wz', 0.5)      # 最大转角速度 rad/s
-        self.declare_parameter('acc_x', 0.25)      # 线加速度上限 m/s²
-        self.declare_parameter('acc_w', 0.6)       # 角加速度上限 rad/s²
+        self.declare_parameter('acc_x', 0.5)       # 线加速度上限 m/s²
+        self.declare_parameter('acc_w', 1.0)       # 角加速度上限 rad/s²
 
         self.declare_parameter('predict_time', 2.0)  # 预测时长 s
         self.declare_parameter('sim_dt', 0.1)        # 模拟步长 s
@@ -324,6 +324,15 @@ class DWAController(Node):
         else:
             self._spin_t0 = now
             self._spin_dist = dist_to_goal
+
+        # 一阶低通平滑: 抑制相邻周期采样抖动, 轨迹更顺滑
+        # 权重偏重新值(vx 0.6), 属性急弯保持机动性
+        if getattr(self, '_sm_v', None) is None:
+            self._sm_v, self._sm_w = best_v, best_w
+        else:
+            self._sm_v = 0.6 * best_v + 0.4 * self._sm_v
+            self._sm_w = 0.6 * best_w + 0.4 * self._sm_w
+        best_v, best_w = self._sm_v, self._sm_w
 
         self.publish_cmd(best_v, best_w)
         # 诊断: 低频打印决策
