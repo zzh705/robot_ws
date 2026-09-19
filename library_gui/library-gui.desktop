@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Library Robot GUI
+Comment=图书馆机器人上位机：goal_bridge(127.0.0.1:9000) + PySide6 界面
+Exec=/home/sunrise/robot_ws/library_gui/start_library_gui.sh start
+Path=/home/sunrise/robot_ws/library_gui
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=10

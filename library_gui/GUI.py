@@ -104,7 +104,7 @@ class HomePage(QWidget):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)  # 移除边距
-        root.setSpacing(25)  # 设置间距
+        root.setSpacing(12)  # 设置间距
         
         root.addStretch(1)
         
@@ -113,11 +113,11 @@ class HomePage(QWidget):
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("""
             QLabel{
-                font-size:48px;
+                font-size:30px;
                 font-weight:800;
                 color:#2F5D50;
-                margin-top:30px;
-                margin-bottom:20px;
+                margin-top:12px;
+                margin-bottom:8px;
             }
         """)
         root.addWidget(title)
@@ -125,10 +125,10 @@ class HomePage(QWidget):
         # 搜索框
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("🔍 搜索书籍名称")
-        self.search.setFixedSize(760, 58)
+        self.search.setFixedSize(600, 44)
         
         self.history = QListWidget()
-        self.history.setFixedSize(760, 150)
+        self.history.setFixedSize(600, 110)
         self.history.hide()
         self.history.setVisible(False)
         
@@ -143,7 +143,7 @@ class HomePage(QWidget):
         
         # ⭐ 快捷功能框 - 向上移动（减少间距）
         box = QGroupBox("📌 快捷功能")
-        box.setFixedSize(760, 160)  # 稍微减小高度
+        box.setFixedSize(600, 112)  # 适配 800x480 屏
         box.setStyleSheet("""
             QGroupBox{
                 font-size:18px;
@@ -165,7 +165,7 @@ class HomePage(QWidget):
         
         # 地图按钮
         map_btn = QPushButton("🗺️ 地图")
-        map_btn.setFixedHeight(70)
+        map_btn.setFixedHeight(50)
         map_btn.setStyleSheet("""
             QPushButton{
                 background: #EEF5EF;
@@ -184,7 +184,7 @@ class HomePage(QWidget):
         
         # 寻找图书按钮
         find_btn = QPushButton("🔍 寻找图书")
-        find_btn.setFixedHeight(70)
+        find_btn.setFixedHeight(50)
         find_btn.setStyleSheet("""
             QPushButton{
                 background: #2F5D50;
@@ -303,7 +303,7 @@ class SearchPage(QWidget):
         # 搜索框 - 保存为实例变量
         self.search = QLineEdit()
         self.search.setPlaceholderText("书名 / 作者 / ISBN")
-        self.search.setFixedSize(900, 60)
+        self.search.setFixedSize(600, 44)
         self.search.setStyleSheet("""
             QLineEdit {
                 font-size: 18px;
@@ -318,18 +318,18 @@ class SearchPage(QWidget):
         self.search.returnPressed.connect(self.on_search)
 
         # ⭐ 减少搜索框和下面的间距
-        v.addSpacing(20)
+        v.addSpacing(8)
 
         # 主内容横向布局 - 使用 QWidget 包裹来实现居中
         h_widget = QWidget()
-        h_widget.setFixedWidth(860)  # 固定宽度，让内容整体居中
+        h_widget.setFixedWidth(600)  # 固定宽度，让内容整体居中
         h = QHBoxLayout(h_widget)
         h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(15)  # 减小间距
+        h.setSpacing(10)  # 减小间距
 
         # 左侧：猜你喜欢
         left = QGroupBox("猜你喜欢")
-        left.setFixedSize(420, 260)  # 减小尺寸
+        left.setFixedSize(288, 168)  # 适配 800x480 屏
         left.setStyleSheet("""
             QGroupBox{
                 font-size:20px;
@@ -349,7 +349,7 @@ class SearchPage(QWidget):
         recommend_items = ["Python", "深度学习", "算法导论", "数据库"]
         for b in recommend_items:
             label = QLabel(f"📚  {b}")
-            label.setFixedHeight(40)
+            label.setFixedHeight(30)
             label.setCursor(Qt.PointingHandCursor)
             label.setStyleSheet("""
                 QLabel{
@@ -368,7 +368,7 @@ class SearchPage(QWidget):
 
         # 右侧：热门搜索
         right = QGroupBox("热门搜索")
-        right.setFixedSize(420, 260)  # 与左边一致
+        right.setFixedSize(288, 168)  # 适配 800x480 屏
         right.setStyleSheet("""
             QGroupBox{
                 font-size:20px;
@@ -388,7 +388,7 @@ class SearchPage(QWidget):
         hot_items = ["机器学习", "人工智能", "计算机网络", "操作系统"]
         for b in hot_items:
             label = QLabel(f"🔥  {b}")
-            label.setFixedHeight(40)
+            label.setFixedHeight(30)
             label.setCursor(Qt.PointingHandCursor)
             label.setStyleSheet("""
                 QLabel{
@@ -409,13 +409,13 @@ class SearchPage(QWidget):
         v.addWidget(h_widget, alignment=Qt.AlignCenter)
         
         # ⭐ 减少间距
-        v.addSpacing(15)
+        v.addSpacing(8)
         
         # 搜索结果标题
         result_title = QLabel("📚 搜索结果")
         result_title.setStyleSheet("""
             QLabel{
-                font-size: 20px;
+                font-size: 15px;
                 font-weight: 700;
                 color: #2F5D50;
                 padding: 5px 10px;
@@ -425,7 +425,7 @@ class SearchPage(QWidget):
         
         # 搜索结果列表
         self.result_list = QListWidget()
-        self.result_list.setFixedSize(680, 240)  
+        self.result_list.setFixedSize(580, 130)
         self.result_list.setStyleSheet("""
             QListWidget{
                 background: white;
@@ -583,12 +583,12 @@ class BorrowPage(QWidget):
         super().__init__()
 
         v = QVBoxLayout(self)
-        v.addSpacing(50)
+        v.addSpacing(10)
 
         # 标题
         title = QLabel("📚 借阅中心")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:32px;font-weight:700;color:#2F5D50;margin-bottom:20px;")
+        title.setStyleSheet("font-size:22px;font-weight:700;color:#2F5D50;margin-bottom:10px;")
         v.addWidget(title)
 
         # 统计卡片
@@ -603,7 +603,7 @@ class BorrowPage(QWidget):
         # ⭐ 修改这里：将"待归还"改为"逾期数"
         for text, label in [("已借阅", self.borrow_label), ("逾期数", self.overdue_label), ("已归还", self.return_label)]:
             card = QFrame()
-            card.setFixedSize(220, 120)
+            card.setFixedSize(170, 88)
             card.setStyleSheet("background:white;border:1px solid #D6E5D8;border-radius:18px;")
             layout = QVBoxLayout(card)
             title_label = QLabel(text)
@@ -616,14 +616,14 @@ class BorrowPage(QWidget):
             top.addWidget(card)
 
         v.addLayout(top)
-        v.addSpacing(40)
+        v.addSpacing(8)
 
     
 
         # 表格：7列
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["用户ID", "借阅图书", "借阅时间", "应归还时间", "状态", "续借次数", "操作"])
-        self.table.setMinimumSize(680, 300)
+        self.table.setMinimumSize(560, 170)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setStyleSheet("""
@@ -1016,7 +1016,7 @@ class RobotPage(QWidget):
 
         # 外层容器
         container = QFrame()
-        container.setFixedSize(700, 450)
+        container.setFixedSize(590, 320)
 
         container.setStyleSheet("""
             QFrame{
@@ -1032,7 +1032,7 @@ class RobotPage(QWidget):
         # 左侧历史记录
         # =====================
         left = QListWidget()
-        left.setFixedWidth(260)
+        left.setFixedWidth(190)
 
         left.addItems([
             "➕ 新建聊天",
@@ -1099,7 +1099,7 @@ class RobotPage(QWidget):
 
         self.input.setPlaceholderText("💬 输入内容...")
 
-        self.input.setFixedHeight(55)
+        self.input.setFixedHeight(40)
 
         self.input.returnPressed.connect(self.send_message)
 
@@ -1121,7 +1121,7 @@ class RobotPage(QWidget):
         # 语音按钮
         self.voice_btn = QPushButton("🎤")
 
-        self.voice_btn.setFixedSize(55, 55)
+        self.voice_btn.setFixedSize(42, 42)
 
         self.voice_btn.setToolTip("语音输入")
 
@@ -1293,12 +1293,12 @@ class BookDetailPage(QWidget):
     
     def init_ui(self):
         main = QVBoxLayout(self)
-        main.setContentsMargins(50, 50, 50, 50)
-        main.setSpacing(15)
+        main.setContentsMargins(18, 8, 18, 8)
+        main.setSpacing(4)
         
         # 返回按钮
         back_btn = QPushButton("← 返回")
-        back_btn.setFixedSize(120, 40)
+        back_btn.setFixedSize(100, 30)
         back_btn.setStyleSheet("""
             QPushButton{
                 background: white;
@@ -1320,7 +1320,7 @@ class BookDetailPage(QWidget):
         # 标题
         title = QLabel("📖 书籍详情")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 24px; font-weight: 700; color: #2F5D50; margin-bottom: 10px;")
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #2F5D50; margin-bottom: 6px;")
         main.addWidget(title)
         
         # 详情卡片
@@ -1332,41 +1332,41 @@ class BookDetailPage(QWidget):
             }
         """)
         card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(12)
-        card_layout.setContentsMargins(20, 10, 20, 10)
+        card_layout.setSpacing(4)
+        card_layout.setContentsMargins(20, 6, 20, 6)
         
         if self.book_data:
             # 书名
             book_name = QLabel(f"📕 《{self.book_data.get('book_name', '未知')}》")
-            book_name.setStyleSheet("font-size: 22px; font-weight: 700; color: #1a1a1a; padding: 3px 0;")
+            book_name.setStyleSheet("font-size: 16px; font-weight: 700; color: #1a1a1a; padding: 2px 0;")
             card_layout.addWidget(book_name)
             
             card_layout.addSpacing(5)
             
             # 作者
             author = QLabel(f"✍️ 作者：{self.book_data.get('author', '未知')}")
-            author.setStyleSheet("font-size: 18px; color: #333; padding: 3px 0;")
+            author.setStyleSheet("font-size: 13px; color: #333; padding: 2px 0;")
             card_layout.addWidget(author)
             
             # 出版社
             publisher = QLabel(f"🏢 出版社：{self.book_data.get('publisher', '未知')}")
-            publisher.setStyleSheet("font-size: 18px; color: #333; padding: 3px 0;")
+            publisher.setStyleSheet("font-size: 13px; color: #333; padding: 2px 0;")
             card_layout.addWidget(publisher)
             
             # ISBN
             isbn = QLabel(f"🔖 ISBN：{self.book_data.get('isbn', '未知')}")
-            isbn.setStyleSheet("font-size: 18px; color: #333; padding: 3px 0;")
+            isbn.setStyleSheet("font-size: 13px; color: #333; padding: 2px 0;")
             card_layout.addWidget(isbn)
             
             # 豆瓣评分
             score = QLabel(f"⭐ 豆瓣评分：{self.book_data.get('douban_score', '暂无')}")
-            score.setStyleSheet("font-size: 18px; color: #333; padding: 3px 0;")
+            score.setStyleSheet("font-size: 13px; color: #333; padding: 2px 0;")
             card_layout.addWidget(score)
             
             # 内容简介标题
             card_layout.addSpacing(10)
             desc_label = QLabel("📝 内容简介")
-            desc_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #2F5D50; padding: 5px 0;")
+            desc_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #2F5D50; padding: 4px 0;")
             card_layout.addWidget(desc_label)
             
             # 内容简介
@@ -1374,7 +1374,7 @@ class BookDetailPage(QWidget):
             desc_text = QTextEdit()
             desc_text.setPlainText(description)
             desc_text.setReadOnly(True)
-            desc_text.setFixedHeight(120)
+            desc_text.setFixedHeight(56)
             desc_text.setStyleSheet("""
                 QTextEdit{
                     font-size: 16px;
@@ -1392,7 +1392,7 @@ class BookDetailPage(QWidget):
             
             # 借阅按钮
             borrow_btn = QPushButton("📚 借阅此书")
-            borrow_btn.setFixedSize(200, 50)
+            borrow_btn.setFixedSize(150, 30)
             borrow_btn.setStyleSheet("""
                 QPushButton{
                     background: #2F5D50;
@@ -1410,7 +1410,7 @@ class BookDetailPage(QWidget):
             
             # ⭐ 寻找图书按钮
             find_btn = QPushButton("🗺️ 寻找图书")
-            find_btn.setFixedSize(200, 50)
+            find_btn.setFixedSize(150, 30)
             find_btn.setStyleSheet("""
                 QPushButton{
                     background: #EEF5EF;
@@ -1429,7 +1429,7 @@ class BookDetailPage(QWidget):
             btn_layout = QHBoxLayout()
             btn_layout.addStretch()
             btn_layout.addWidget(borrow_btn)
-            btn_layout.addSpacing(20)
+            btn_layout.addSpacing(12)
             btn_layout.addWidget(find_btn)
             btn_layout.addStretch()
             card_layout.addLayout(btn_layout)
@@ -1662,17 +1662,16 @@ class BookDetailPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.resize(640, 440)
         self.setWindowTitle("图书馆机器人 V4")
         cw=QWidget();self.setCentralWidget(cw)
         root=QHBoxLayout(cw)
 
-        nav=QFrame();nav.setFixedWidth(180)
+        nav=QFrame();nav.setFixedWidth(130)
         nav.setStyleSheet(f"background:{GREEN};border-radius:20px;")
         nv=QVBoxLayout(nav)
 
         ai=QPushButton("🤖\nLibrary AI\n智能助手在线")
-        ai.setFixedHeight(160)
+        ai.setFixedHeight(110)
         ai.setStyleSheet("background:white;color:#111827;border-radius:16px;font-weight:700;")
         nv.addWidget(ai)
 
@@ -1696,7 +1695,7 @@ class MainWindow(QMainWindow):
         for i,(n,_) in enumerate(pages):
             b=QPushButton("■ "+n)
             b.clicked.connect(lambda checked=False,x=i:self.stack.setCurrentIndex(x))
-            b.setStyleSheet("QPushButton{color:white;background:transparent;border:none;text-align:left;padding:14px;font-size:15px;font-weight:600;}QPushButton:hover{background:#4F7A6D;border-radius:12px;}")
+            b.setStyleSheet("QPushButton{color:white;background:transparent;border:none;text-align:left;padding:10px;font-size:11px;font-weight:600;}QPushButton:hover{background:#4F7A6D;border-radius:12px;}")
             nv.addWidget(b)
         nv.addStretch()
 
@@ -1710,6 +1709,20 @@ class MainWindow(QMainWindow):
         QHeaderView::section{background:#F3F4F6;border:none;padding:8px;font-weight:600;}
         """)
 
+        # ---- 窗口尺寸自适应 ----
+        # 必须放在布局建好之后：提前 resize 会被布局的 sizeHint 覆盖，
+        # 窗口被撑大（板载屏 800x480 上会被撑到 788x530）就会溢出屏幕。
+        # 高度还要留出窗口管理器标题栏+边框（xfwm4 实测 29+5=34px），
+        # 否则客户端尺寸没超，整个窗体仍会伸到屏幕外。
+        screen = QApplication.primaryScreen().availableGeometry()
+        win_w = min(1000, screen.width() - 20)
+        win_h = min(700, screen.height() - 44)
+        self.resize(win_w, win_h)
+        self.move(
+            screen.x() + max(0, (screen.width() - win_w) // 2),
+            screen.y() + max(0, (screen.height() - win_h) // 2),
+        )
+
 class ProfilePage(QWidget):
     def __init__(self):
         super().__init__()
@@ -1717,14 +1730,14 @@ class ProfilePage(QWidget):
         main = QVBoxLayout(self)
 
         # 顶部留白
-        main.addSpacing(60)
+        main.addSpacing(10)
 
         # 标题
         title = QLabel("👤 个人中心")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("""
             QLabel{
-                font-size:32px;
+                font-size:22px;
                 font-weight:700;
                 color:#2F5D50;
             }
@@ -1737,7 +1750,7 @@ class ProfilePage(QWidget):
         # 用户信息卡片
         # ==========================
         card = QFrame()
-        card.setFixedSize(700, 250)
+        card.setFixedSize(580, 150)
 
         card.setStyleSheet("""
             QFrame{
@@ -1748,11 +1761,11 @@ class ProfilePage(QWidget):
         """)
 
         h = QHBoxLayout(card)
-        h.setContentsMargins(40,40,40,40)
+        h.setContentsMargins(20, 16, 20, 16)
 
         # 头像
         avatar = QLabel("👤")
-        avatar.setFixedSize(160,160)
+        avatar.setFixedSize(96,96)
         avatar.setAlignment(Qt.AlignCenter)
 
         avatar.setStyleSheet("""
@@ -1778,7 +1791,7 @@ ID账号：20250001
 
         info.setStyleSheet("""
             QLabel{
-                font-size:20px;
+                font-size:14px;
                 color:#333333;
                 padding-left:20px;
             }
@@ -1803,7 +1816,7 @@ ID账号：20250001
             "🔒 修改密码\n\n修改登录密码"
         )
 
-        pwd_card.setFixedSize(300,160)
+        pwd_card.setFixedSize(230,104)
 
         pwd_card.setStyleSheet("""
             QPushButton{
@@ -1824,7 +1837,7 @@ ID账号：20250001
             "⚙️ 系统设置\n\n个性化设置"
         )
 
-        setting_card.setFixedSize(300,160)
+        setting_card.setFixedSize(230,104)
 
         setting_card.setStyleSheet("""
             QPushButton{

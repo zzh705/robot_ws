@@ -50,6 +50,12 @@ class BridgeNode(Node):
             # 解码：payload → EncoderData
             enc = unpack_encoder(payload)
 
+            # 诊断: 打印原始计数, 判断 update 前解析是否正常
+            self.get_logger().info(
+                f'RAW enc: ts={enc.timestamp_ms} '
+                f'fl={enc.fl} rl={enc.rl} fr={enc.fr} rr={enc.rr}'
+            )
+
             # 换算：脉冲数 → 四轮速度 m/s
             v_fl, v_fr, v_rl, v_rr = self.encoder_vel.update(
                 enc.timestamp_ms,
@@ -75,6 +81,13 @@ class BridgeNode(Node):
             float(msg.linear.x),
             float(msg.linear.y),
             float(msg.angular.z),
+        )
+
+        # >>> 诊断: 确认收到指令 + 帧内容
+        self.get_logger().warn(
+            f'CMD_VEL TX: vx={msg.linear.x:.4f} '
+            f'vy={msg.linear.y:.4f} wz={msg.angular.z:.4f} '
+            f'frame={frame.hex(" ")}'
         )
 
         self.serial.send(frame)

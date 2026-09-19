@@ -10,7 +10,7 @@ WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # 周长 = 0.3047m
 
 # TODO: 拿到后填这里（让 STM32 队友告诉你）
 # 每转一圈编码器发出多少个脉冲
-TICKS_PER_REV = 1440  # 例如: 390, 600, 1320 等
+TICKS_PER_REV = 122758  # 真机标定: 0.1/0.2/0.3 m/s 悬空反推, 四轮三速自洽 (min~122k max~123k)
 class EncoderVelocity:
     """
     功能：输入当前时刻的四个轮子累计脉冲数，输出四个轮子当前速度 m/s。
