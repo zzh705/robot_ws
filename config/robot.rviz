@@ -160,7 +160,7 @@ Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: map
-    Frame Rate: 30
+    Frame Rate: 5
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact
@@ -200,12 +200,12 @@ Visualization Manager:
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1029
+  Height: 800
   Hide Left Dock: false
   Hide Right Dock: false
   QMainWindow State: 000000ff00000000fd00000001000000000000019b000003affc0200000002fb000000100044006900730070006c006100790073010000003b00000227000000c700fffffffb0000000a00560069006500770073010000026800000182000000a000ffffff000005df000003af00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 1920
+  Width: 1280
   X: 0
   Y: 27

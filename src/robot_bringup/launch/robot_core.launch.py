@@ -7,7 +7,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription, ExecuteProcess, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -45,7 +45,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'stm32_port',
-            default_value='/dev/ttyACM0',
+            default_value='/dev/robot_stm32',
             description='STM32 串口设备路径'
         ),
         DeclareLaunchArgument(
@@ -74,6 +74,13 @@ def generate_launch_description():
             launch_arguments={
                 'port': LaunchConfiguration('stm32_port')
             }.items()
+        ),
+
+        # 手柄遥控 — 只发布 /cmd_vel（STM32 串口由 stm32_bridge 独占）。
+        # 放这里是为了看护重启核心链路后遥控不会丢。
+        ExecuteProcess(
+            cmd=['python3', '-u', '/home/sunrise/robot_ws/scripts/gamepad_cmd_vel.py'],
+            output='screen'
         )
 
     ])

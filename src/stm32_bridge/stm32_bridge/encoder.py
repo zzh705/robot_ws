@@ -11,6 +11,20 @@ WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # 周长 = 0.3047m
 # TODO: 拿到后填这里（让 STM32 队友告诉你）
 # 每转一圈编码器发出多少个脉冲
 TICKS_PER_REV = 122758  # 真机标定: 0.1/0.2/0.3 m/s 悬空反推, 四轮三速自洽 (min~122k max~123k)
+
+# ============ 轮子方向标定（必须与真机接线一致）============
+# 2026-09-19 实测: 下发 /cmd_vel linear.x = +0.1 时, STM32 上报的原始计数变化为
+#     fl = +, rl = -, fr = -, rr = +      （对角两正两负）
+# 不做归一化时 odometry 的 vx = (vfl + vfr + vrl + vrr) / 4 会互相抵消:
+# /odom 把"直线前进"报成 vx≈0 / vy≈-0.09（看起来在横移），SLAM 建图必然崩。
+# 这里按轮乘一个方向系数, 把"前进"统一成正速度。
+# 换电机/换编码器接线后需要重新标定这 4 个数。
+WHEEL_SIGN = {
+    'fl': 1.0,
+    'rl': -1.0,
+    'fr': -1.0,
+    'rr': 1.0,
+}
 class EncoderVelocity:
     """
     功能：输入当前时刻的四个轮子累计脉冲数，输出四个轮子当前速度 m/s。
@@ -67,10 +81,10 @@ class EncoderVelocity:
         # v_rr = d_rr / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
 
         # 临时先用 0，等 TICKS_PER_REV 拿到后替换上面三行
-        v_fl = d_fl / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
-        v_fr = d_fr / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
-        v_rl = d_rl / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
-        v_rr = d_rr / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
+        v_fl = WHEEL_SIGN['fl'] * d_fl / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
+        v_fr = WHEEL_SIGN['fr'] * d_fr / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
+        v_rl = WHEEL_SIGN['rl'] * d_rl / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
+        v_rr = WHEEL_SIGN['rr'] * d_rr / TICKS_PER_REV * WHEEL_CIRCUMFERENCE / dt
 
         # 更新存储
         self.prev_fl = fl

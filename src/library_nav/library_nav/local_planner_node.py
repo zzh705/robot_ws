@@ -19,9 +19,12 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
+from rclpy.time import Time
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformListener
 
 
 class DWAController(Node):
@@ -84,8 +87,20 @@ class DWAController(Node):
         self.vel = (0.0, 0.0, 0.0)       # 当前速度 (vx, vy, wz)  -- vy 预留麦轮横移
         self.scan_points = None          # 障碍点数组 Nx2, odom 系
         self.scan_count = 0
-        self.goal_pose = None            # PoseStamped(已变换到 odom 系)
-        self.global_path = None          # A* 路径(点数组, 任何系, 与 goal 同系)
+        # 目标与全局路径可能来自 map 系(GUI→goal_bridge 发的是 map 系),
+        # 而本节点所有几何计算都在 odom 系 —— 因此只缓存原始 frame,
+        # 在 plan_once 里用最新 TF 转到 odom 系再算(旧实现在这里"假装已是 odom 系")。
+        self.goal_raw = None             # (x, y, frame) 原始目标
+        self.goal_pose = None            # 目标在 odom 系下的 (x, y)
+        self.path_raw = None             # A* 路径原始点
+        self.path_frame = 'map'          # 原始路径所在 frame
+        self.global_path = None          # 上一条路径在 odom 系下的视图(每周期刷新)
+
+        # =====================
+        # TF: 目标/路径 map→odom 变换
+        # =====================
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # =====================
         # 订阅 / 发布
@@ -194,28 +209,79 @@ class DWAController(Node):
         self.vel = (tw.linear.x, tw.linear.y, tw.angular.z)
 
     def on_goal(self, msg: PoseStamped):
-        self.goal_pose = (msg.pose.position.x,
-                          msg.pose.position.y)
+        frame = msg.header.frame_id or 'map'
+        self.goal_raw = (msg.pose.position.x, msg.pose.position.y, frame)
         self.get_logger().info(
-            f'New goal: ({self.goal_pose[0]:.2f}, {self.goal_pose[1]:.2f})')
+            f'New goal: ({msg.pose.position.x:.2f}, {msg.pose.position.y:.2f}) '
+            f'frame={frame} (plan 时转到 odom 系)')
 
     def on_global_path(self, msg: Path):
         if not msg.poses:
             return
-        self.global_path = [
+        self.path_raw = [
             (p.pose.position.x, p.pose.position.y)
             for p in msg.poses
         ]
+        self.path_frame = msg.header.frame_id or 'map'
         self.get_logger().info(
-            f'Global path updated: {len(self.global_path)} points')
+            f'Global path updated: {len(self.path_raw)} points '
+            f'frame={self.path_frame} (plan 时转到 odom 系)')
+
+    # ============================================================
+    # TF 工具: 任意 frame → odom
+    # ============================================================
+
+    def _lookup_yaw(self, target, source):
+        """取 target←source 变换的平移与 yaw(只用到平面二维)."""
+        t = self.tf_buffer.lookup_transform(
+            target, source, Time(), timeout=Duration(seconds=0.2))
+        q = t.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return t.transform.translation.x, t.transform.translation.y, yaw
+
+    def point_to_odom(self, x, y, frame):
+        """frame 系下的点 → odom 系; 无 TF 时返回 None(而不是悄悄用错坐标系)."""
+        if frame in ('', 'odom'):
+            return (x, y)
+        try:
+            tx, ty, yaw = self._lookup_yaw('odom', frame)
+        except Exception as e:
+            self.log_throttled(f'tf {frame}->odom 不可用, 暂不规划: {e}')
+            return None
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        return (tx + x * cy - y * sy, ty + x * sy + y * cy)
+
+    def path_to_odom(self):
+        """整条全局路径 → odom 系(一次 TF + 线性变换, 10Hz 开销可忽略)."""
+        if self.path_raw is None:
+            return None
+        if self.path_frame in ('', 'odom'):
+            return list(self.path_raw)
+        try:
+            tx, ty, yaw = self._lookup_yaw('odom', self.path_frame)
+        except Exception:
+            return None
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        return [(tx + x * cy - y * sy, ty + x * sy + y * cy)
+                for (x, y) in self.path_raw]
 
     # ============================================================
     # 主决策: DWA 四步
     # ============================================================
 
     def plan_once(self):
-        if self.goal_pose is None:
+        if self.goal_raw is None:
             return  # 还没有目标, 不动作
+
+        # ---- 目标点统一转到 odom 系(本节点所有几何都在 odom 系) ----
+        goal_odom = self.point_to_odom(*self.goal_raw)
+        if goal_odom is None:
+            return
+        self.goal_pose = goal_odom
+
+        # ---- 全局路径同样转到 odom 系后再用 ----
+        self.global_path = self.path_to_odom()
 
         x, y, theta = self.pose
         vx, vy, wz = self.vel

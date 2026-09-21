@@ -200,6 +200,8 @@ class HomePage(QWidget):
             }
         """)
   
+        # ⭐ 寻找图书按钮 → 弹输入框, 拿书名后调 on_search
+        find_btn.clicked.connect(self.open_find_book)
         
         btn_layout.addWidget(map_btn)
         btn_layout.addWidget(find_btn)
@@ -213,9 +215,26 @@ class HomePage(QWidget):
         self.search_results = []
     
     def open_map(self):
-        """打开地图功能"""
-        show_dialog(self, "地图", "图书馆地图功能开发中...\n\n📍 图书馆位于：天津市宝坻区北京科技大学天津学院")
-        # 这里可以添加打开地图的实际功能
+        """打开地图功能 —— 弹地图视图窗口, 可点击任意点派单 / 4 个书位一键前往."""
+        from map_view import MapViewWindow
+        if not hasattr(self, '_map_win') or self._map_win is None \
+                or not self._map_win.isVisible():
+            self._map_win = MapViewWindow(self)
+            self._map_win.closed.connect(
+                lambda: setattr(self, '_map_win', None))
+        self._map_win.show()
+        self._map_win.raise_()
+        self._map_win.activateWindow()
+
+    def open_find_book(self):
+        """寻找图书按钮 —— 弹输入框拿书名, 然后走 on_search 流程."""
+        text, ok = QInputDialog.getText(
+            self, '寻找图书', '请输入书名:')
+        if not ok or not text.strip():
+            return
+        self.search.setText(text.strip())
+        self.history.show()
+        self.on_search()
     
     
     def on_search(self):
@@ -1004,6 +1023,31 @@ class VoiceWorker(QThread):
 
             self.error.emit(str(e))
 
+class TTSWorker(QThread):
+    """把一段文本交给语音播报(后台线程, 不阻塞界面)。"""
+
+    failed = Signal(str)
+
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+
+    def run(self):
+
+        try:
+
+            import tts
+
+            ok, msg = tts.speak(self.text)
+
+            if not ok:
+
+                self.failed.emit(msg)
+
+        except Exception as e:
+
+            self.failed.emit(str(e))
+
 
 class RobotPage(QWidget):
     def __init__(self):
@@ -1201,6 +1245,9 @@ class RobotPage(QWidget):
 
             answer = book_chat(question)
 
+            # 记住最后一条回答, 供"🔊 播放"按钮使用
+            self._last_answer = answer
+
             # 显示助手回复
             # 显示助手回复 + 语音按钮
             self.chat.append(
@@ -1221,10 +1268,27 @@ class RobotPage(QWidget):
         self.input.clear()
     
     def play_tts(self, url):
-        print("点击了喇叭：", url.toString())
+        """点击"🔊 播放": 把最近一条回答交给 hobot_tts 播报。
 
-        # 阻止 QTextBrowser 继续处理这个链接
+        后台线程执行, 失败时把原因贴回聊天区 ——
+        旧实现只是 setSource(QUrl()), 点了没有任何反应。
+        """
         self.chat.setSource(QUrl())
+
+        text = (getattr(self, '_last_answer', '') or '').strip()
+
+        if not text:
+
+            self.chat.append("\n❌ 还没有可播放的回答")
+            return
+
+        self.tts_worker = TTSWorker(text)
+
+        self.tts_worker.failed.connect(
+            lambda m: self.chat.append(f"\n❌ 语音播报失败：{m}")
+        )
+
+        self.tts_worker.start()
 
     def voice_message(self):
 
@@ -1263,6 +1327,8 @@ class RobotPage(QWidget):
         )
 
         # 显示 AI 回答
+        self._last_answer = answer
+
         self.chat.append(
             f"""
             <p>🤖 <b>Library AI：</b></p>
@@ -1473,8 +1539,21 @@ class BookDetailPage(QWidget):
                 conn.close()
 
         # ---------- 2. 把位置发给机器人 ----------
-        from robot_comm import send_go_to
-        ok, robot_msg = send_go_to(location or "", book_name)
+        # 优先: 若 bookmarks.json 里有该书名的锚点, 直接用坐标派单
+        # (这就是语音找书 + 地图点击走的链路)
+        # 降级: 沿用旧的 A/B/C/D 区号派单
+        from robot_comm import send_goto_xy, send_go_to
+        bm = self._load_bookmarks()
+        anchor = bm.get(book_name) if bm else None
+        if anchor and anchor.get('goal_x') is not None:
+            ok, robot_msg = send_goto_xy(
+                anchor['goal_x'], anchor['goal_y'],
+                book_name=book_name)
+            via = '坐标'
+        else:
+            ok, robot_msg = send_go_to(location or "", book_name)
+            via = '区号'
+        print(f"派单方式: {via}; ok={ok}; message={robot_msg}", flush=True)
         print(f"机器人返回：ok={ok}, message={robot_msg}", flush=True)
         # ---------- 3. 弹窗反馈 ----------
         location_display = location if location else "暂未录入"
@@ -1486,7 +1565,7 @@ class BookDetailPage(QWidget):
             body = (f"📍 目标位置：{location_display}\n\n"
                     f"{status_text}\n\n"
                     f"🤖 机器人已收到指令，请跟随指示灯前往。\n"
-                    f"（{robot_msg}）")
+                    f"（派单方式: {via} | {robot_msg}）")
             title = "🤖 已通知机器人"
         else:
             body = (f"📍 目标位置：{location_display}\n\n"
@@ -1622,6 +1701,20 @@ class BookDetailPage(QWidget):
                 conn.close()
 
     # ==================== 工具方法 ====================
+    @staticmethod
+    def _load_bookmarks():
+        """读 maps/bookmarks.json, 返回 dict[书名] -> 锚点(无文件返回 None)."""
+        import json, os
+        try:
+            bm_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', 'maps', 'bookmarks.json')
+            with open(bm_path, 'r', encoding='utf-8') as f:
+                bm = json.load(f)
+            return bm.get('books', {})
+        except Exception:
+            return None
+
     def get_book_id_by_name(self, book_name):
         """根据书名查找书籍ID"""
         if not book_name:

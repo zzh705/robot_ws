@@ -150,12 +150,17 @@ class GlobalPlannerNode(Node):
 
         self.declare_parameter('inflation_radius', 0.28)  # 车半径 + 安全边
         self.declare_parameter('occupancy_threshold', 60)  # 地图值 >= 此视为障碍(%)
-        self.declare_parameter('goal_frame', 'map')
+        # 地图会变: SLAM 重启/继续建图/回环优化都会重发 /map。
+        # 重建膨胀层的最小间隔(秒), 防止高频重算拖垮 CPU。
+        self.declare_parameter('min_rebuild_interval', 2.0)
 
         self.inflation_r = self.get_parameter('inflation_radius').value
         self.occ_thr = self.get_parameter('occupancy_threshold').value
+        self.rebuild_interval = self.get_parameter('min_rebuild_interval').value
 
         self.map_msg = None
+        self._map_raw = None          # 上一张地图的原始字节(判重用)
+        self._last_build = 0.0
         self.astar = None
         self.robot_frame = 'base_footprint'
 
@@ -173,8 +178,16 @@ class GlobalPlannerNode(Node):
 
     # ---------- 地图缓存 + 膨胀 ----------
     def on_map(self, msg: OccupancyGrid):
-        if self.map_msg is not None:
-            return  # 地图已就绪(避免重复膨胀)
+        # 旧实现是 "只取第一张图" (if self.map_msg is not None: return),
+        # 结果 SLAM 重启后 A* 仍在旧图上规划, 与看护脚本重启 core 的行为直接冲突。
+        raw = bytes(msg.data)
+        if raw == self._map_raw:
+            return  # 内容没变, 不必重算
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_build < self.rebuild_interval:
+            return  # 节流: 地图更新很频繁时不要每帧都膨胀
+        self._last_build = now
+        self._map_raw = raw
         self.map_msg = msg
 
         w, h = msg.info.width, msg.info.height
@@ -197,7 +210,7 @@ class GlobalPlannerNode(Node):
 
         self.astar = AStar8(inflated, res, (ox, oy))
         self.get_logger().info(
-            f'Map {w}x{h} res={res}, inflation {inflate_px}px, '
+            f'Map (re)built {w}x{h} res={res}, inflation {inflate_px}px, '
             f'{occ.sum()} occupied px -> {inflated.sum()} inflated px')
 
     # ---------- 目标触发规划 ----------
@@ -240,9 +253,14 @@ class GlobalPlannerNode(Node):
         try:
             t = self.tf_buffer.lookup_transform(
                 'map', frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5))
-            ex, ey = point[0] + t.transform.translation.x, \
-                     point[1] + t.transform.translation.y
-            return ex, ey
+            # 旧实现只加了平移、漏了旋转 —— 目标点非 map 系时会偏。
+            q = t.transform.rotation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+            px, py = point
+            return (t.transform.translation.x + px * cos_y - py * sin_y,
+                    t.transform.translation.y + px * sin_y + py * cos_y)
         except Exception as e:
             self.get_logger().warn(f'tf {frame}->map failed: {e}')
             return None

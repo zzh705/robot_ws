@@ -122,6 +122,11 @@ class PIDControllerNode(Node):
             Odometry, '/odom', self.on_odom, 10)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
+        # /cmd_vel 是共享话题: 遥控脚本(file_cmd_vel / teleop_twist_keyboard)也发它。
+        # 两个发布者同时存在会互相抢底盘, 这里发现后告警一次。
+        self._conflict_warned = False
+        self.create_timer(2.0, self.warn_if_conflict)
+
         self.target = Twist()
         self.feedback = Twist()
         self.has_target = False
@@ -145,6 +150,17 @@ class PIDControllerNode(Node):
         self.get_logger().info(
             f'PID controller ready: '
             f'mvx={self.mvx} mvy={self.mvy} mwz={self.mwz}')
+
+    def warn_if_conflict(self):
+        if self._conflict_warned:
+            return
+        n = self.count_publishers('/cmd_vel')
+        if n > 1:
+            self._conflict_warned = True
+            self.get_logger().warn(
+                f'/cmd_vel 上当前有 {n} 个发布者(含本节点)。'
+                f'若同时开着遥控(file_cmd_vel/teleop_twist_keyboard), '
+                f'两边会互相抢底盘; 遥控前请先停掉导航栈。')
 
     def on_plan(self, msg: Twist):
         self.target = msg

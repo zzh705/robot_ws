@@ -86,7 +86,7 @@
     <child link="laser"/>
 
     <origin xyz="0 0 0.25"
-            rpy="0 0 0"/>
+            rpy="0 0 3.14159265"/>
 
   </joint>
 

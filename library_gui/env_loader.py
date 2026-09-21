@@ -15,10 +15,9 @@ _DEFAULTS = {
     # 数据库
     'DB_HOST': 'localhost',
     'DB_USER': 'library',
-    'DB_PASSWORD': 'library123',
     'DB_NAME': 'books',
     # 串口
-    'STM32_PORT': '/dev/ttyACM0',
+    'STM32_PORT': '/dev/robot_stm32',
 }
 
 _ENV_FILE = os.path.join(

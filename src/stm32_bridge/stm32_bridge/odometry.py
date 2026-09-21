@@ -7,7 +7,16 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
-from tf_transformations import quaternion_from_euler
+
+
+def quaternion_from_euler_yaw(yaw):
+    """绕 Z 轴(yaw)旋转 → 四元数 (x, y, z, w).
+
+    只用到 yaw, 本地实现即可; 不再依赖 tf_transformations ——
+    它是 pip 包, 未在 package.xml 声明, 换机容易缺失。
+    """
+    half = yaw * 0.5
+    return (0.0, 0.0, math.sin(half), math.cos(half))
 
 # ============ 底盘尺寸（已确认）============
 # 轮距一半 = 98mm = 0.098m（左右轮中心距的一半）
@@ -75,7 +84,7 @@ class OdometryPublisher(Node):
         odom.child_frame_id = 'base_footprint'    # 车体坐标系名字
         odom.pose.pose.position.x = self.x
         odom.pose.pose.position.y = self.y
-        q = quaternion_from_euler(0.0, 0.0, self.theta)  # 欧拉角→四元数
+        q = quaternion_from_euler_yaw(self.theta)  # 欧拉角→四元数
         odom.pose.pose.orientation.x = q[0]
         odom.pose.pose.orientation.y = q[1]
         odom.pose.pose.orientation.z = q[2]

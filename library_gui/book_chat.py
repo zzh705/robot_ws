@@ -50,6 +50,15 @@ def extract_keyword(question):
         "帮我查询",
         "帮我查一下",
         "帮我查",
+        "我要找",
+        "我要去找",
+        "请找",
+        "带我去",
+        "我想看",
+        "想看",
+        "想读",
+        "我想读",
+        "请帮我去",
         "我想找一本",
         "我想找",
         "我想查询",
@@ -117,6 +126,11 @@ def detect_intent(text):
     for word in search_words:
         if word in text:
             return "search"
+    # ⭐ 补漏: "我要找 X / 想看 X / 想读 X / 请找 X / 带我去 X" 等
+    # 关键词列表里没明列出来, 用正则补上
+    import re as _re
+    if _re.search(r'(我要|我想|我想看|想看|想读|我想读|请找|请帮我找|带我去|我要去)\s*\S', text):
+        return "search"
 
     # --------------------------------------------------------
     # 其他问题交给 AI
@@ -184,7 +198,44 @@ def book_chat(text):
         if not keyword:
             return "请告诉我你想查询哪本书。"
 
-        return search_books(keyword)
+        # ---------- 拿到命中书, 若 bookmarks.json 有锚点则顺便派单 ----------
+        result = search_books(keyword)
+        # search_books 现在返回 (reply_text, first_book_name)
+        reply = result[0] if isinstance(result, tuple) else result
+        first_name = result[1] if isinstance(result, tuple) and len(result) > 1 else None
+
+        try:
+            import json, os
+            bm_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', 'maps', 'bookmarks.json')
+            with open(bm_path, 'r', encoding='utf-8') as f:
+                bm = json.load(f).get('books', {})
+        except Exception:
+            bm = {}
+
+        # 优先精确匹配; 否则从 bookmarks 里找一个"包含 first_name"或
+        # "first_name 包含" 的 key —— 应对数据库里命名变体的情况
+        # (例: first='中国科幻基石丛书·三体（全三册）', bookmarks 里是'三体')
+        anchor = None
+        if first_name:
+            if first_name in bm:
+                anchor = bm[first_name]
+            else:
+                for k, v in bm.items():
+                    if k in first_name or first_name in k:
+                        anchor = v
+                        break
+        if anchor and anchor.get('goal_x') is not None:
+            from robot_comm import send_goto_xy
+            ok, msg = send_goto_xy(
+                anchor['goal_x'], anchor['goal_y'],
+                book_name=first_name)
+            tail = (f"\n\n📍 检测到该书已在地图上锚定"
+                    f"\n🤖 已让机器人带您去《{first_name}》"
+                    f"({anchor.get('book_name', first_name)}): {msg}")
+            return reply + tail
+        return reply
 
     # ========================================================
     # 借书

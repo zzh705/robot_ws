@@ -6,6 +6,7 @@
 #    1) goal_bridge_node   监听 127.0.0.1:9000
 #                          GUI 的 find_book 请求 → ROS2 /goal_pose
 #    2) GUI.py             PySide6 图书馆界面（跑在 :0.0 桌面）
+#    3) hobot_tts          订阅 /tts_text，把 AI 回答念出来（RUN_TTS=1，默认开）
 #
 #  用法：
 #    ./start_library_gui.sh            启动（默认）
@@ -19,6 +20,7 @@
 #    RUN_GUI=0      只起 goal_bridge（无桌面时用）
 #    RUN_NAV=1      额外拉起导航三层（A*/DWA/PID）—— 默认关闭！
 #                   打开后 /goal_pose 会真的驱动小车，务必先架空轮子
+#    RUN_TTS=0      不起语音播报（hobot_tts）
 #
 #  开机自启：
 #    ~/.config/autostart/library-gui.desktop 以 sunrise 身份调用本脚本
@@ -45,20 +47,25 @@ X_SOCK="/tmp/.X11-unix/X0"
 BRIDGE_HOST="127.0.0.1"
 BRIDGE_PORT="9000"
 
+# hobot_tts 的模型目录写死在二进制里（相对包路径），不要挪
+TTS_MODEL_DIR="/opt/tros/humble/lib/hobot_tts/tts_model"
+
 LOG_DIR="${APP_DIR}/logs"
 BRIDGE_LOG="${LOG_DIR}/goal_bridge.log"
 GUI_LOG="${LOG_DIR}/gui.log"
 MAIN_LOG="${LOG_DIR}/autostart.log"
+TTS_LOG="${LOG_DIR}/tts.log"
 
 RUN_BRIDGE="${RUN_BRIDGE:-1}"
 RUN_GUI="${RUN_GUI:-1}"
 RUN_NAV="${RUN_NAV:-0}"
+RUN_TTS="${RUN_TTS:-1}"
 
 mkdir -p "${LOG_DIR}"
 
 # 日志轮转: 单文件超 5MB 时压缩为 .1.gz, 依次顺延, 最多保留 3 份
 rotate_logs() {
-    for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${LOG_DIR}/nav.log"; do
+    for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${LOG_DIR}/nav.log" "${TTS_LOG}"; do
         [ -f "$f" ] || continue
         size_k="$(du -k "$f" 2>/dev/null | awk '{print $1}')"
         [ "${size_k:-0}" -gt 5120 ] || continue
@@ -191,6 +198,45 @@ start_nav() {
 #  启动 GUI
 # ------------------------------------------------------------
 
+tts_pids() {
+    pgrep -f "lib/hobot_tts/hobot_tts" 2>/dev/null
+}
+
+start_tts() {
+    if [ "${RUN_TTS}" != "1" ]; then
+        log "[tts] RUN_TTS=0，跳过"
+        return 0
+    fi
+
+    if [ -n "$(tts_pids)" ]; then
+        log "[tts] 已在运行（pid $(tts_pids | tr '\n' ' ')），跳过"
+        return 0
+    fi
+
+    if [ ! -d "${TTS_MODEL_DIR}" ]; then
+        log "[tts] !! 模型缺失 ${TTS_MODEL_DIR}，界面的朗读按钮会报错"
+        log "[tts]    解压: tar -xzf ${APP_DIR}/tts_model.tar.gz -C /opt/tros/humble/lib/hobot_tts/"
+        return 1
+    fi
+
+    log "[tts] 启动 hobot_tts（订阅 /tts_text）"
+
+    setsid nohup bash -c "
+        source '${ROS_SETUP}'
+        source '${WS_SETUP}'
+        exec ros2 run hobot_tts hobot_tts
+    " >> "${TTS_LOG}" 2>&1 &
+
+    sleep 3
+    if [ -n "$(tts_pids)" ]; then
+        log "[tts] OK：pid $(tts_pids | tr '\n' ' ')"
+        return 0
+    fi
+
+    log "[tts] !! hobot_tts 没起来，看 ${TTS_LOG}"
+    return 1
+}
+
 start_gui() {
     if [ "${RUN_GUI}" != "1" ]; then
         log "[gui] RUN_GUI=0，跳过"
@@ -258,6 +304,14 @@ stop_all() {
         pkill -f "pid_controller_node"
         sleep 1
     fi
+
+    if [ -n "$(tts_pids)" ]; then
+        log "[tts] 停止 pid $(tts_pids | tr '\n' ' ')"
+        pkill -f "lib/hobot_tts/hobot_tts" || log "[tts] 停止失败（需 root 停）"
+        sleep 1
+    else
+        log "[tts] 本来就没在跑"
+    fi
 }
 
 status_all() {
@@ -285,6 +339,11 @@ status_all() {
     else
         echo "导航三层    : 未运行"
     fi
+    if [ -n "$(tts_pids)" ]; then
+        echo "语音播报    : 运行中  pid=$(tts_pids | tr '\n' ' ')"
+    else
+        echo "语音播报    : 未运行（hobot_tts）"
+    fi
     echo "---------------------------------------------"
 }
 
@@ -299,6 +358,7 @@ case "${1:-start}" in
     start)
         log "===== start ====="
         start_bridge
+        start_tts
         start_nav
         start_gui
         status_all
@@ -314,6 +374,7 @@ case "${1:-start}" in
         stop_all
         sleep 1
         start_bridge
+        start_tts
         start_nav
         start_gui
         status_all

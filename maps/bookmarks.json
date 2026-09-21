@@ -1,0 +1,79 @@
+{
+  "map": "/home/sunrise/robot_ws/maps/room",
+  "image": "room.pgm",
+  "resolution": 0.05,
+  "origin": [
+    -3.47,
+    -3.82,
+    0.0
+  ],
+  "width": 156,
+  "height": 144,
+  "inflate_radius": 0.28,
+  "books": {
+    "红星照耀中国": {
+      "x": 0.646,
+      "y": 0.966,
+      "pixel": [
+        81.81,
+        47.78
+      ],
+      "area": 27,
+      "goal_x": 1.655,
+      "goal_y": 0.155,
+      "goal_pixel": [
+        102,
+        64
+      ],
+      "goal_clearance": 1.134
+    },
+    "活着": {
+      "x": 2.977,
+      "y": 1.015,
+      "pixel": [
+        128.44,
+        46.8
+      ],
+      "area": 25,
+      "goal_x": 2.005,
+      "goal_y": 0.155,
+      "goal_pixel": [
+        109,
+        64
+      ],
+      "goal_clearance": 1.134
+    },
+    "三体": {
+      "x": 3.124,
+      "y": -0.761,
+      "pixel": [
+        131.38,
+        82.31
+      ],
+      "area": 29,
+      "goal_x": 1.955,
+      "goal_y": -0.195,
+      "goal_pixel": [
+        108,
+        71
+      ],
+      "goal_clearance": 1.142
+    },
+    "平凡的世界": {
+      "x": 0.725,
+      "y": -0.905,
+      "pixel": [
+        83.4,
+        85.2
+      ],
+      "area": 10,
+      "goal_x": 1.805,
+      "goal_y": -0.195,
+      "goal_pixel": [
+        105,
+        71
+      ],
+      "goal_clearance": 1.221
+    }
+  }
+}
