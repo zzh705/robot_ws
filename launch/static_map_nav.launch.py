@@ -31,6 +31,21 @@ def generate_launch_description():
             }],
         ),
 
+        # 1b) lifecycle manager: nav2_map_server 是生命周期节点。
+        #     没有它, map_server 会停在 unconfigured, /map 永远不会发布
+        #     (新版 robot_nav_all.launch.py 里已有同样一段)。
+        Node(
+            package='nav2_lifecycle_manager',
+            executable='lifecycle_manager',
+            name='lifecycle_manager_map',
+            output='screen',
+            parameters=[{
+                'use_sim_time': False,
+                'autostart': True,
+                'node_names': ['map_server'],
+            }],
+        ),
+
         # 2) 静态 TF: map → odom (假设车当前在地图原点附近, x=0 y=0 朝向 0)
         # 真实情况下应该由 amcl / slam_toolbox 提供; 这里临时给一个常量值
         Node(

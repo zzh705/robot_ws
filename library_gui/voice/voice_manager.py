@@ -64,7 +64,12 @@ class VoiceManager:
         self.sample_rate = 48000
         self.channels = 1
 
+        # 采集设备按【声卡名】绑定, 不写卡号:
+        #   USB 声卡(AB13X)换 USB 口重枚举后卡号会变(1<->0),
+        #   写死 plughw:1,0 会打不开(见 start_library_gui.sh 里 hobot_tts 的同类注释);
+        #   CARD=Audio 与卡号无关。板载 ES8326(card0) 拾不到人声, 这里明确指向 USB 麦。
         self.recorder = AudioRecorder(
+            device='plughw:CARD=Audio,DEV=0',
             sample_rate=self.sample_rate,
             channels=self.channels
         )

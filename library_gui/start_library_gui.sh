@@ -278,7 +278,12 @@ start_tts() {
 
     log "[tts] 启动 hobot_tts（订阅 /tts_text）"
 
-    setsid nohup bash -c "${ROS_ENV_HEAD} cd /opt/tros/humble/lib/hobot_tts && exec ros2 run hobot_tts hobot_tts --ros-args -p playback_device:=plughw:1,0" \
+    # 播放设备按【声卡名】绑定, 不写卡号:
+    #   USB 声卡(AB13X)换 USB 口重新枚举后会从 card1 变成 card0,
+    #   此时 plughw:1,0 会打不开(2026-10-11 日志里出现过
+    #   "Cannot get card index for 1" + "alsa_device_init speaker failed")。
+    #   CARD=Audio 是那张 USB 声卡的名字, 与卡号无关。
+    setsid nohup bash -c "${ROS_ENV_HEAD} cd /opt/tros/humble/lib/hobot_tts && exec ros2 run hobot_tts hobot_tts --ros-args -p playback_device:=plughw:CARD=Audio,DEV=0" \
         >> "${TTS_LOG}" 2>&1 &
 
     sleep 3
@@ -311,11 +316,12 @@ start_gui() {
 
     cd "${APP_DIR}" || return 1
 
-    setsid nohup env \
-        DISPLAY="${DISPLAY_ID}" \
-        XAUTHORITY="${XAUTH}" \
-        HOME="/home/${RUN_USER}" \
-        "${PYTHON}" GUI.py >> "${GUI_LOG}" 2>&1 &
+    # 让 GUI 继承完整 ROS 环境：语音播报 tts.py 用 rclpy 发布 /tts_text，
+    # 而 rclpy 位于 /opt/ros/humble/local/lib/python3.10/dist-packages，
+    # 且 _rclpy_pybind11 需要 LD_LIBRARY_PATH 指向 /opt/ros/humble/lib。
+    # 旧写法 `env DISPLAY=.. python3 GUI.py` 只传了 DISPLAY/HOME，
+    # GUI 进程内 import rclpy 直接 ModuleNotFoundError，播报必然失败。
+    setsid nohup bash -c "${ROS_ENV_HEAD} export DISPLAY=${DISPLAY_ID} XAUTHORITY=${XAUTH} HOME=/home/${RUN_USER}; exec ${PYTHON} GUI.py" >> "${GUI_LOG}" 2>&1 &
 
     sleep 4
     if [ -n "$(gui_pids)" ]; then

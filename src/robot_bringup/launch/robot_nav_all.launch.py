@@ -60,18 +60,12 @@ def generate_launch_description():
     # ----- 参数声明 -----
     args = [
         DeclareLaunchArgument(
-            'enable_slam', default_value='true',
-            # 同名参数重复声明, 后者覆盖前者, 真正生效的是下面这个 'false' 默认
-            # 真改: 默认 false -> 与静态地图 / static map→odom 互斥
-            # 把上面那行 default_value='true' 留着但下面这行覆盖更靠右会被忽略,
-            # 所以直接改这里:
-            description='是否启用 slam_toolbox 持续建图(默认 false, '
-                        '用户已在 GUI 地图上派单, 不需要 SLAM 同时建图)。'
-                        '注意: true 时会与静态 map_server / 静态 map→odom'
-                        '互斥(双发 /map 与 map→odom 会让 A* 与 DWA 全错位)'),
-        DeclareLaunchArgument(
             'enable_slam', default_value='false',
-            description='(实际生效的 SLAM 开关: 默认关, 与静态地图互斥)'),
+            description='是否启用 slam_toolbox 持续建图。默认 false: 用静态地图'
+                        '(map_server + 静态 map→odom) 派单, 不需要同时建图。'
+                        '置 true 会与静态 map_server / 静态 map→odom 互斥'
+                        '(双发 /map 与 map→odom 会让 A* 与 DWA 全错位), '
+                        '此时静态那两处会自动停用(UnlessCondition)。'),
         DeclareLaunchArgument(
             'enable_rviz', default_value='false',
             description='是否启动 RViz2 (板端默认关闭)'),
@@ -111,6 +105,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'control_period', default_value='0.05',
             description='DWA 决策周期 s (默认 0.05 = 20Hz)'),
+        DeclareLaunchArgument(
+            'inflation_radius', default_value='0.28',
+            description='障碍膨胀半径 m —— A* 与 DWA 共用这一个值(单一来源)。'
+                        '实测车体 0.33×0.25 m → 半对角线 0.207 m 是几何下限, '
+                        '0.28 = 0.207 + 7.3cm 余量。窄通道过不去时可调到 0.22~0.25, '
+                        '但要同步改 global_planner_node/local_planner_node 的默认值'
+                        '与 scripts/plan_check.py、library_gui/map_view.py。'),
         DeclareLaunchArgument(
             'rviz_config',
             default_value='/home/sunrise/robot_ws/config/robot.rviz',
@@ -205,7 +206,7 @@ def generate_launch_description():
             name='global_planner',
             output='screen',
             parameters=[{
-                'inflation_radius': 0.30,
+                'inflation_radius': LaunchConfiguration('inflation_radius'),
                 # ROS OccupancyGrid 0-100 (由 /map 传来, 已 negate+threshold 转换).
                 # 50 = nav2 默认; > 50 当障碍, <=50 当可走.
                 # 旧值 60 是错误的: 代码里会拿 raw PGM 0-254 灰度比 60, 导致整间房 96.6% 像素被判障碍.
@@ -231,7 +232,7 @@ def generate_launch_description():
                 'acc_x': 1.5,
                 'acc_w': 3.0,
                 'control_period': LaunchConfiguration('control_period'),
-                'inflate_radius': 0.28,
+                'inflate_radius': LaunchConfiguration('inflation_radius'),
                 'goal_tolerance': 0.15,
                 'w_heading': 0.35,
                 'w_dist': 0.30,

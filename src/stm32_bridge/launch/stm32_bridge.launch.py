@@ -24,6 +24,19 @@ def generate_launch_description():
         description='STM32 串口设备路径；留空则自动探测'
     )
 
+    imu_arg = DeclareLaunchArgument(
+        'publish_imu',
+        default_value='true',
+        description='是否把下位机上报的 IMU(TYPE=0x04) 发布成 /imu/data'
+    )
+
+    imu_frame_arg = DeclareLaunchArgument(
+        'imu_frame_id',
+        default_value='base_footprint',
+        description='IMU 消息的 frame_id。URDF 里目前没有 imu_link, 用 '
+                    'base_footprint 可直接在 RViz 显示; 以后加了 imu_link 再改'
+    )
+
     bridge_node = Node(
         package='stm32_bridge',
         executable='stm32_bridge_node',
@@ -31,11 +44,15 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'port': LaunchConfiguration('port'),
+            'publish_imu': LaunchConfiguration('publish_imu'),
+            'imu_frame_id': LaunchConfiguration('imu_frame_id'),
         }],
     )
 
     return LaunchDescription([
         port_arg,
+        imu_arg,
+        imu_frame_arg,
         LogInfo(msg='stm32_bridge: port 留空 → 自动探测 /dev/robot_stm32'),
         bridge_node,
     ])

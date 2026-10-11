@@ -173,7 +173,13 @@ class GlobalPlannerNode(Node):
         super().__init__('global_planner')
 
         # ---------- 地图层 ----------
-        self.declare_parameter('inflation_radius', 0.30)  # 车半径 + 安全边
+        # 障碍膨胀半径: 由实测车体(0.33 × 0.25 m)推出
+        #   半对角线 = sqrt(0.165² + 0.125²) = 0.207 m  ← 几何下限(任意朝向都安全)
+        #   0.28 = 0.207 + 7.3cm 安全余量
+        # 全车只在此处定义默认值; launch 用 inflation_radius 参数覆盖,
+        # 脚本/离线校验(scripts/plan_check.py, obstacle_anchor.py)与
+        # GUI 地图(map_view.py)必须用同一个数。
+        self.declare_parameter('inflation_radius', 0.28)  # 半对角线 + 安全边
         # occupancy_threshold 是 ROS OccupancyGrid 0..100 的占据阈值
         # 来自 /map (ros nav2_map_server 已做 negate/threshold 转换)
         # 50 = 经典 nav2 默认; > 50 视为占据, <= 50 视为可走

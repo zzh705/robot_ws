@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """STM32 桥接主节点：串口 ↔ ROS2"""
 
+import math
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from .serial_driver import SerialDriver, auto_detect_port
+from .imu import ImuPublisher
 from .protocol import (
     FrameParser,
     TYPE_ENCODER,
+    TYPE_IMU,
     unpack_encoder,
+    unpack_imu,
     pack_cmd_vel,
 )
 from .encoder import EncoderVelocity
@@ -32,6 +37,29 @@ class BridgeNode(Node):
         self.encoder_vel = EncoderVelocity()
         self.odom_pub = OdometryPublisher()
         self._log_ts = {}
+
+        # ===== IMU (TYPE=0x04): 下位机 MPU6050 以 10Hz 上报 =====
+        self.declare_parameter('publish_imu', True)
+        self.declare_parameter('imu_topic', 'imu/data')
+        self.declare_parameter('imu_frame_id', 'base_footprint')
+        self.declare_parameter('imu_axes', 'xyz')
+        self.declare_parameter('imu_signs', '+++')
+        self.declare_parameter('imu_min_interval', 0.0)
+        self.imu_pub = None
+        if self.get_parameter('publish_imu').get_parameter_value().bool_value:
+            self.imu_pub = ImuPublisher(
+                self,
+                topic=self.get_parameter(
+                    'imu_topic').get_parameter_value().string_value,
+                frame_id=self.get_parameter(
+                    'imu_frame_id').get_parameter_value().string_value,
+                axes=self.get_parameter(
+                    'imu_axes').get_parameter_value().string_value,
+                signs=self.get_parameter(
+                    'imu_signs').get_parameter_value().string_value,
+                min_interval=self.get_parameter(
+                    'imu_min_interval').get_parameter_value().double_value,
+            )
         try:
             self.serial.open()
         except Exception as exc:
@@ -95,6 +123,24 @@ class BridgeNode(Node):
                     f'odom: fl={v_fl:.3f} fr={v_fr:.3f} '
                     f'rl={v_rl:.3f} rr={v_rr:.3f}'
                 )
+
+        elif frame_type == TYPE_IMU:
+            # 下位机 MPU6050 的量测; 帧里没有时间戳, 用上位机收到的时间戳
+            try:
+                imu = unpack_imu(payload)
+            except ValueError as exc:
+                # 回调里绝不能让异常穿透: 会顺着 executor 冒到 spin(),
+                # 把整个节点进程杀掉。这里只限频告警并丢弃该帧。
+                if self.throttled('imu_bad', 2.0):
+                    self.get_logger().warn(f'IMU 帧异常已丢弃: {exc}')
+                return
+
+            if self.imu_pub is not None:
+                self.imu_pub.publish(imu)
+                if self.throttled('imu', 5.0):
+                    self.get_logger().info(
+                        'IMU: ' + self.imu_pub.summary(imu)
+                        + f'  已发 {self.imu_pub.count} 帧')
 
     def on_cmd_vel(self, msg: Twist):
         """收到 /cmd_vel 后，打包发给 STM32"""

@@ -10,7 +10,7 @@
     20Hz 决策(DWA), 显著减少"卡顿"
     max_vx 0.45, max_wz 0.9
     acc_x 1.5, acc_w 3.0      (允许更快的反应)
-    inflate_radius 0.30       (与 global_planner 严格一致)
+    inflate_radius 0.28       (与 global_planner 同源: 半对角线 0.207 + 余量)
     PID kp=2.0 kd=0.05         (加入少量阻尼, 减少抖动)
     slew_v 0.08 slew_w 0.15    (软启动 20Hz 周期, 与 DWA 加速匹配)
 """
@@ -80,7 +80,7 @@ def generate_launch_description():
                 'sim_dt': 0.1,
                 'sample_v': 9,
                 'sample_w': 11,
-                'inflate_radius': 0.30,
+                'inflate_radius': 0.28,
                 'goal_tolerance': 0.15,
                 'lookahead': 0.4,
                 'robot_radius': 0.30,

@@ -19,8 +19,9 @@ TYPE:
 0x01 CMD_VEL
 0x02 ENCODER
 0x03 HEARTBEAT
-0x04 ACK
+0x04 IMU        与固件 stm32_firmware/applications/protocol.h 对齐
 0x05 ERROR
+0x06 ACK        原先是 0x04, 与固件 IMU 撞号, 现让位 (协议里暂无人用 ACK)
 
 所有多字节整数采用 little-endian。
 float32 使用 IEEE-754 little-endian。
@@ -40,8 +41,23 @@ VERSION = 0x01
 TYPE_CMD_VEL = 0x01
 TYPE_ENCODER = 0x02
 TYPE_HEARTBEAT = 0x03
-TYPE_ACK = 0x04
+
+# 0x04 在固件侧是 IMU:
+#     #define PROTO_TYPE_IMU 0x04
+# 上位机原先把 0x04 定义成 ACK, 于是下位机 10Hz 上报的 IMU 帧被当成 ACK
+# 静默丢弃 —— 这就是 IMU 一直连不上的根因。现按固件对齐。
+TYPE_IMU = 0x04
+TYPE_ACK = 0x06          # 原 0x04, 让位给 IMU
 TYPE_ERROR = 0x05
+
+# IMU 载荷 (TYPE=0x04): ax,ay,az,gx,gy,gz 各 int32 LE,
+# 物理量放大 1000 倍 —— 加速度 mg, 角速度 m°/s (见固件 proto_build_imu)
+IMU_LEN = 24
+IMU_FRAME_LEN = 2 + 1 + 1 + 2 + IMU_LEN + 2
+
+# 单位换算: mg → m/s², m°/s → rad/s
+MG_TO_MS2 = 9.80665 / 1000.0
+MDPS_TO_RADS = 3.141592653589793 / 180000.0
 
 
 # ============================================================
@@ -274,6 +290,78 @@ def unpack_encoder(data: bytes) -> EncoderData:
 
 
 # ============================================================
+# IMU
+# ============================================================
+
+@dataclass
+class ImuData:
+    """
+    STM32 -> RDK
+
+    TYPE = 0x04, 载荷 24 字节, **不带时间戳** (帧里只有 6 个量测)。
+
+    固件把物理量放大 1000 倍后以 int32 LE 发送:
+        ax, ay, az : 加速度,  单位 mg   (毫 g)
+        gx, gy, gz : 角速度,  单位 m°/s (毫度每秒)
+
+    这里直接换算成 ROS/REP-103 习惯的 SI 单位:
+        ax, ay, az : m/s²
+        gx, gy, gz : rad/s
+    """
+
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+
+
+def pack_imu(ax_mg: int, ay_mg: int, az_mg: int,
+             gx_mdps: int, gy_mdps: int, gz_mdps: int) -> bytes:
+    """
+    组一帧 IMU (TYPE=0x04)。
+
+    入参是固件那边的**原始整数单位**: 加速度 mg、角速度 m°/s —— 保持与
+    固件 proto_build_imu() 完全一致的字节布局, 供模拟器(fake_stm.py)和
+    自测使用:
+        AA 55 | 01 | 04 | 18 00 | ax ay az gx gy gz (int32 LE) | CRC16 LE
+    """
+
+    data = struct.pack(
+        "<iiiiii",
+        int(ax_mg),
+        int(ay_mg),
+        int(az_mg),
+        int(gx_mdps),
+        int(gy_mdps),
+        int(gz_mdps),
+    )
+
+    return pack_frame(TYPE_IMU, data)
+
+
+def unpack_imu(data: bytes) -> ImuData:
+    """
+    解析 IMU DATA(24 字节) → SI 单位 ImuData。
+    """
+
+    if len(data) != IMU_LEN:
+        raise ValueError(f"IMU DATA 长度错误：{len(data)}，应为 {IMU_LEN}")
+
+    ax, ay, az, gx, gy, gz = struct.unpack("<iiiiii", data)
+
+    return ImuData(
+        ax=ax * MG_TO_MS2,
+        ay=ay * MG_TO_MS2,
+        az=az * MG_TO_MS2,
+        gx=gx * MDPS_TO_RADS,
+        gy=gy * MDPS_TO_RADS,
+        gz=gz * MDPS_TO_RADS,
+    )
+
+
+# ============================================================
 # HEARTBEAT
 # ============================================================
 
@@ -500,5 +588,30 @@ if __name__ == "__main__":
         print("vx =", cmd.vx)
         print("vy =", cmd.vy)
         print("omega =", cmd.omega)
+
+    # IMU
+    imu_frame = pack_imu(0, 0, 1000, 0, 0, 20000)
+
+    print("IMU frame:")
+    print(imu_frame.hex(" "))
+
+    parser2 = FrameParser()
+
+    parsed = parser2.feed(imu_frame)
+
+    print("Parsed frames:", parsed)
+
+    if parsed:
+
+        ftype, payload = parsed[0]
+
+        print("TYPE:", hex(ftype))
+
+        imu = unpack_imu(payload)
+
+        print("IMU:",
+              "a =", (round(imu.ax, 3), round(imu.ay, 3), round(imu.az, 3)),
+              "m/s²  g =", (round(imu.gx, 3), round(imu.gy, 3),
+                            round(imu.gz, 3)), "rad/s")
 
     print("=== Test Finished ===")

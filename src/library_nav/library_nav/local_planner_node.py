@@ -45,7 +45,9 @@ class DWAController(Node):
         self.declare_parameter('sample_v', 9)        # 线速度采样份数
         self.declare_parameter('sample_w', 11)       # 角速度采样份数
 
-        self.declare_parameter('inflate_radius', 0.25)  # 障碍膨胀半径(半车宽+安全) m
+        # 障碍膨胀半径: 与 global_planner 同源(见其注释: 半对角线 0.207 + 余量)
+        # 原为 0.25, 与 launch/GUI/脚本里的 0.28 不一致, 现统一。
+        self.declare_parameter('inflate_radius', 0.28)  # 半对角线 + 安全边 m
         self.declare_parameter('goal_tolerance', 0.15)  # 到达判定 m
         self.declare_parameter('lookahead', 0.4)        # 路径前瞻距离 m
 

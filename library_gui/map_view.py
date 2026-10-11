@@ -97,7 +97,7 @@ def _pgm_to_qimage(pgm_path):
     return img.copy(), w, h
 
 
-def _build_static_inflated(pgm_path, res, threshold=89, inflate_radius_m=0.30):
+def _build_static_inflated(pgm_path, res, threshold=89, inflate_radius_m=0.28):
     """读 PGM 转成"已膨胀"的占用栅格(用于点击预校验).
 
     返回 occ: np.uint8 (h, w), 0=可走, 1=被膨胀层覆盖.
@@ -431,7 +431,7 @@ class MapViewWindow(QWidget):
         self.view.fitInView(rect, Qt.KeepAspectRatio)
 
         # 4 个书位: 在 goal_x/goal_y 画一个色块 + 锚点中心圆点
-        # 锚点尺寸 = inflate_radius (0.30m), 防止派单贴墙
+        # 锚点尺寸 = inflate_radius (0.28m), 防止派单贴墙
         for i, (name, info) in enumerate(self.book_list):
             color = BOOK_COLORS[i % len(BOOK_COLORS)]
             gx, gy = info['goal_x'], info['goal_y']

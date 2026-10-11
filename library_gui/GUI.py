@@ -1017,12 +1017,13 @@ class VoiceWorker(QThread):
     stage = Signal(str)
 
     def __init__(self, seconds=8, auto_stop=True, max_seconds=10.0,
-                 stop_event=None):
+                 stop_event=None, ask=True):
         super().__init__()
         self.seconds = seconds
         self.auto_stop = auto_stop
         self.max_seconds = max_seconds
         self._stop_event = stop_event
+        self.ask = ask
 
     def request_stop(self):
         """界面「再点一下结束」时调用: 让录音循环尽快收尾。"""
@@ -1037,15 +1038,34 @@ class VoiceWorker(QThread):
 
             manager = VoiceManager()
 
-            text, answer = manager.voice_chat(
-                seconds=self.seconds,
-                auto_stop=self.auto_stop,
-                max_seconds=self.max_seconds,
-                on_level=self.level.emit,
-                on_stage=self.stage.emit,
-                stop_check=(self._stop_event.is_set
-                            if self._stop_event is not None else None),
-            )
+            stop_check = (self._stop_event.is_set
+                          if self._stop_event is not None else None)
+
+            if self.ask:
+                # 完整链路: 录音 → 识别 → 问答
+                text, answer = manager.voice_chat(
+                    seconds=self.seconds,
+                    auto_stop=self.auto_stop,
+                    max_seconds=self.max_seconds,
+                    on_level=self.level.emit,
+                    on_stage=self.stage.emit,
+                    stop_check=stop_check,
+                )
+            else:
+                # 只做语音转文字: 录音 → 识别, 结果交回界面填聊天框
+                wav = manager.record(
+                    self.seconds,
+                    on_level=self.level.emit,
+                    on_stage=self.stage.emit,
+                    auto_stop=self.auto_stop,
+                    max_seconds=self.max_seconds,
+                    stop_check=stop_check,
+                )
+                text = ""
+                if wav:
+                    self.stage.emit('recognizing')
+                    text = manager.recognize(wav)
+                answer = ""
 
             self.finished.emit(text, answer)
 
@@ -1599,6 +1619,11 @@ class VoicePage(QWidget):
         self.auto_speak = QCheckBox('回答后自动播报')
         self.auto_speak.setChecked(True)
         left.addWidget(self.auto_speak, alignment=Qt.AlignHCenter)
+        self.auto_send = QCheckBox('识别后直接提问')
+        self.auto_send.setChecked(False)
+        self.auto_send.setToolTip(
+            '关闭=只把识别文字填进下方输入框; 开启=识别后自动向 Library AI 提问')
+        left.addWidget(self.auto_send, alignment=Qt.AlignHCenter)
 
         # 小工具行放左侧窄列：右侧留给对话区，避免把整页最小宽度撑大
         tools = QHBoxLayout()
@@ -1732,6 +1757,7 @@ class VoicePage(QWidget):
             auto_stop=True,
             max_seconds=float(self.MAX_RECORD_SECONDS),
             stop_event=self._stop_event,
+            ask=self.auto_send.isChecked(),
         )
         self._worker.level.connect(self.mic.set_level)
         self._worker.stage.connect(self._on_worker_stage)
@@ -1782,11 +1808,28 @@ class VoicePage(QWidget):
             return
 
         self.mic_hint.setText('点击说话')
-        self._set_status('完成', 'done')
+        self._set_stage(None)
+
+        if self.auto_send.isChecked():
+            # 直接提问: 原来的「显示问题 + AI 回答」路径
+            self._set_status('完成', 'done')
+            self._append(
+                f'<p style="color:#1F2937;">👤 <b>你：</b>'
+                f'{html_escape(text)}</p>')
+            self._show_answer(answer)
+            return
+
+        # 仅转文字: 识别结果填进聊天输入框, 等用户确认/编辑后回车发送
+        self.input.setText(text)
+        self.input.setCursorPosition(len(text))
+        self.input.setFocus()
+        self._set_status('识别完成 · 回车发送', 'done')
         self._append(
-            f'<p style="color:#1F2937;">👤 <b>你：</b>'
-            f'{html_escape(text)}</p>')
-        self._show_answer(answer)
+            f'<p style="color:#0F766E;">🎤 识别结果：'
+            f'{html_escape(text)}<br>'
+            f'<span style="color:#6B7280;font-size:12px;">'
+            f'已填入下方输入框, 可编辑后回车发送</span></p>')
+        self._scroll_end()
 
     def _on_worker_error(self, err):
         self._rec_timer.stop()
