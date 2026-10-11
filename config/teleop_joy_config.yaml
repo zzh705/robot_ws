@@ -1,0 +1,27 @@
+# BEITONG D2Z XINPUT GAMEPAD teleop config
+# axes: [LX, LY, LT, RX, RY, RT, DPadX, DPadY]
+# buttons: [A, B, X, Y, LB, RB, LT(btn), RT(btn), Back, Start, L3, R3, Home, Capture]
+teleop_twist_joy:
+  ros__parameters:
+    require_enable_button: true
+    enable_button: 4  # LB
+    enable_turbo_button: 5  # RB
+    axis_linear:
+      x: 1  # LY (forward/back)
+    scale_linear:
+      x: 0.5
+    scale_linear_turbo:
+      x: 1.0
+    axis_angular:
+      yaw: 0  # LX (left/right turn)
+    scale_angular:
+      yaw: 1.0
+    scale_angular_turbo:
+      yaw: 1.5
+
+joy_node:
+  ros__parameters:
+    dev: "/dev/input/js0"
+    deadzone: 0.05
+    autorepeat_rate: 20.0
+    coalesce_interval_ms: 1

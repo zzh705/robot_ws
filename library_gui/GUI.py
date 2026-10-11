@@ -1,6 +1,10 @@
 import sys
 import os
 
+import math
+import threading
+from html import escape as html_escape
+
 VOICE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "voice"
@@ -9,10 +13,12 @@ VOICE_DIR = os.path.join(
 if VOICE_DIR not in sys.path:
     sys.path.insert(0, VOICE_DIR)
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
+from PySide6.QtGui import (
+    QFont, QPainter, QColor, QBrush, QPen, QLinearGradient, QTextCursor)
 from PySide6.QtWidgets import *
 from PySide6.QtCore import Signal, QUrl, QThread
+from map_page import MapPage
 import pymysql
 from dbutils.pooled_db import PooledDB 
 from 数据池 import db_pool
@@ -163,24 +169,25 @@ class HomePage(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(40)
         
-        # 地图按钮
-        map_btn = QPushButton("🗺️ 地图")
-        map_btn.setFixedHeight(50)
-        map_btn.setStyleSheet("""
+        # 语音交互按钮（原来的「地图」入口已移除；按钮按位替换、尺寸不变，
+        # 所以快捷功能框的布局不受影响）
+        voice_btn = QPushButton("🎤 语音助手")
+        voice_btn.setFixedHeight(50)
+        voice_btn.setStyleSheet("""
             QPushButton{
-                background: #EEF5EF;
-                border: 2px solid #D6E5D8;
+                background: #FDECEA;
+                border: 2px solid #E74C3C;
                 border-radius: 16px;
                 font-size: 20px;
                 font-weight: 600;
-                color: #2F5D50;
+                color: #B03A2E;
             }
             QPushButton:hover{
-                background: #D6E5D8;
-                border-color: #2F5D50;
+                background: #F8D7D3;
+                border-color: #B03A2E;
             }
         """)
-        map_btn.clicked.connect(self.open_map)
+        voice_btn.clicked.connect(self.open_voice)
         
         # 寻找图书按钮
         find_btn = QPushButton("🔍 寻找图书")
@@ -203,7 +210,7 @@ class HomePage(QWidget):
         # ⭐ 寻找图书按钮 → 弹输入框, 拿书名后调 on_search
         find_btn.clicked.connect(self.open_find_book)
         
-        btn_layout.addWidget(map_btn)
+        btn_layout.addWidget(voice_btn)
         btn_layout.addWidget(find_btn)
         vbox.addLayout(btn_layout)
         
@@ -214,17 +221,17 @@ class HomePage(QWidget):
         # 存储搜索结果
         self.search_results = []
     
-    def open_map(self):
-        """打开地图功能 —— 弹地图视图窗口, 可点击任意点派单 / 4 个书位一键前往."""
-        from map_view import MapViewWindow
-        if not hasattr(self, '_map_win') or self._map_win is None \
-                or not self._map_win.isVisible():
-            self._map_win = MapViewWindow(self)
-            self._map_win.closed.connect(
-                lambda: setattr(self, '_map_win', None))
-        self._map_win.show()
-        self._map_win.raise_()
-        self._map_win.activateWindow()
+    def open_voice(self):
+        """打开语音交互页 —— 主页面预留的语音按钮入口。
+
+        主页面原来的「地图」功能已按要求移除，按钮按位替换成语音入口；
+        map_view.py 仍保留在项目目录里（未删除），需要时可再挂回来。
+        """
+        main_window = self.window()
+        if hasattr(main_window, 'voice_page'):
+            main_window.stack.setCurrentWidget(main_window.voice_page)
+        elif hasattr(main_window, 'stack'):
+            main_window.stack.setCurrentIndex(5)
 
     def open_find_book(self):
         """寻找图书按钮 —— 弹输入框拿书名, 然后走 on_search 流程."""
@@ -997,13 +1004,30 @@ class ExpandLineEdit(QLineEdit):        #ai
         super().focusInEvent(event)
 
 class VoiceWorker(QThread):
+    """后台跑「录音 → 识别 → 问答」全链路, 不阻塞界面。
+
+    除结果外还回传两个信号给界面做交互反馈:
+        level : 0.0~1.0 实时音量(驱动麦克风电平环)
+        stage : recording / recognizing / thinking(驱动阶段指示)
+    """
 
     finished = Signal(str, str)
     error = Signal(str)
+    level = Signal(float)
+    stage = Signal(str)
 
-    def __init__(self, seconds=5):
+    def __init__(self, seconds=8, auto_stop=True, max_seconds=10.0,
+                 stop_event=None):
         super().__init__()
         self.seconds = seconds
+        self.auto_stop = auto_stop
+        self.max_seconds = max_seconds
+        self._stop_event = stop_event
+
+    def request_stop(self):
+        """界面「再点一下结束」时调用: 让录音循环尽快收尾。"""
+        if self._stop_event is not None:
+            self._stop_event.set()
 
     def run(self):
 
@@ -1014,7 +1038,13 @@ class VoiceWorker(QThread):
             manager = VoiceManager()
 
             text, answer = manager.voice_chat(
-                seconds=self.seconds
+                seconds=self.seconds,
+                auto_stop=self.auto_stop,
+                max_seconds=self.max_seconds,
+                on_level=self.level.emit,
+                on_stage=self.stage.emit,
+                stop_check=(self._stop_event.is_set
+                            if self._stop_event is not None else None),
             )
 
             self.finished.emit(text, answer)
@@ -1023,10 +1053,37 @@ class VoiceWorker(QThread):
 
             self.error.emit(str(e))
 
+
+class AskWorker(QThread):
+    """纯文字提问(打字 / 快捷短语)的后台线程, 复用同一条问答链路。"""
+
+    finished = Signal(str, str)
+    error = Signal(str)
+
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+
+    def run(self):
+
+        try:
+
+            from book_chat import book_chat
+
+            answer = book_chat(self.text)
+
+            self.finished.emit(self.text, answer)
+
+        except Exception as e:
+
+            self.error.emit(str(e))
+
+
 class TTSWorker(QThread):
     """把一段文本交给语音播报(后台线程, 不阻塞界面)。"""
 
     failed = Signal(str)
+    done = Signal()
 
     def __init__(self, text):
         super().__init__()
@@ -1043,6 +1100,10 @@ class TTSWorker(QThread):
             if not ok:
 
                 self.failed.emit(msg)
+
+            else:
+
+                self.done.emit()
 
         except Exception as e:
 
@@ -1350,6 +1411,489 @@ class RobotPage(QWidget):
 
 
 
+class MicButton(QWidget):
+    """圆形麦克风按钮 —— 语音交互页的核心控件。
+
+    三种状态:
+        idle      深绿, 待机
+        listening 红色 + 呼吸脉冲环 + 实时音量环
+        busy      橙色, 正在识别 / 思考
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(132, 132)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip('点一下开始说话；再点一下提前结束')
+        self._state = 'idle'
+        self._pulse = 0.0
+        self._level = 0.0
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def set_state(self, state):
+        if state != self._state:
+            self._state = state
+            if state != 'listening':
+                self._pulse = 0.0
+        self.update()
+
+    def set_level(self, level):
+        """0.0~1.0 的实时音量, 做一点下坠平滑, 看起来更像真的在听。"""
+        level = 0.0 if level < 0 else (1.0 if level > 1 else level)
+        self._level = max(level, self._level * 0.65)
+        self.update()
+
+    def _tick(self):
+        self._phase += 0.16
+        if self._state == 'listening':
+            self._pulse = (math.sin(self._phase) + 1.0) / 2.0
+        else:
+            self._pulse *= 0.88
+            self._level *= 0.85
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        center = QPointF(cx, cy)
+        r = min(self.width(), self.height()) / 2.0 - 4
+
+        # 呼吸脉冲环(仅聆听时)
+        if self._state == 'listening':
+            ring = r * (0.86 + 0.14 * self._pulse)
+            p.setPen(QPen(QColor(231, 76, 60, 110), 4))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(center, ring, ring)
+
+        # 实时音量环
+        if self._level > 0.03:
+            ring = r * (0.70 + 0.28 * min(1.0, self._level))
+            p.setPen(QPen(QColor('#27AE60'), 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(center, ring, ring)
+
+        body_r = r * 0.66
+        color = {
+            'listening': QColor('#E74C3C'),
+            'busy': QColor('#F39C12'),
+        }.get(self._state, QColor('#2F5D50'))
+        grad = QLinearGradient(cx, cy - body_r, cx, cy + body_r)
+        grad.setColorAt(0.0, color.lighter(120))
+        grad.setColorAt(1.0, color)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(center, body_r, body_r)
+
+        # 简笔麦克风图标
+        p.setPen(QPen(QColor(255, 255, 255, 235), 3))
+        p.setBrush(Qt.NoBrush)
+        mw = body_r * 0.30
+        p.drawRoundedRect(
+            QRectF(cx - mw / 2.0, cy - mw * 1.35, mw, mw * 2.0),
+            mw / 2.0, mw / 2.0)
+        p.drawArc(
+            QRectF(cx - mw * 1.05, cy - mw * 1.05, mw * 2.1, mw * 2.3),
+            int(200 * 16), int(140 * 16))
+        p.drawLine(QPointF(cx, cy + mw * 1.25), QPointF(cx, cy + mw * 1.75))
+        p.drawLine(QPointF(cx - mw * 0.62, cy + mw * 1.75),
+                   QPointF(cx + mw * 0.62, cy + mw * 1.75))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class VoicePage(QWidget):
+    """🎤 语音交互页
+
+    交互设计:
+      * 大圆麦克风: 点一下开始说话, 检测到说完自动停, 也能再点一下提前结束;
+      * 说话时红色呼吸环 + 绿色实时音量环 —— 肉眼可见「麦克风在听」;
+      * 阶段指示条: 录音 → 识别 → 思考 → 播报, 当前阶段高亮;
+      * 对话区保留多轮上下文, 回答可自动播报 / 一键重播;
+      * 快捷短语 + 打字提问: 没有麦克风也能用同一条问答链路。
+    """
+
+    STAGES = (
+        ('recording', '🎙 录音'),
+        ('recognizing', '📝 识别'),
+        ('thinking', '🧠 思考'),
+        ('speaking', '🔊 播报'),
+    )
+    MAX_RECORD_SECONDS = 10
+
+    def __init__(self):
+        super().__init__()
+        self._worker = None
+        self._ask_worker = None
+        self._tts_worker = None
+        self._stop_event = None
+        self._last_answer = ''
+        self._rec_seconds = 0.0
+        self._rec_timer = QTimer(self)
+        self._rec_timer.setInterval(100)
+        self._rec_timer.timeout.connect(self._tick_record)
+        self._build_ui()
+        self._set_stage(None)
+
+    # --------------------------------------------------------------
+    # 界面
+    # --------------------------------------------------------------
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(8)
+
+        head = QHBoxLayout()
+        title = QLabel('🎤 语音助手')
+        title.setStyleSheet('font-size:20px;font-weight:800;color:#2F5D50;')
+        head.addWidget(title)
+        head.addStretch(1)
+        self.status = QLabel('待机 · 点麦克风开始说话')
+        head.addWidget(self.status)
+        root.addLayout(head)
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+
+        # ---------- 左列: 麦克风 + 阶段 ----------
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        left.addStretch(1)
+
+        self.mic = MicButton()
+        self.mic.clicked.connect(self.on_mic_clicked)
+        left.addWidget(self.mic, alignment=Qt.AlignHCenter)
+
+        self.mic_hint = QLabel('点击说话')
+        self.mic_hint.setAlignment(Qt.AlignCenter)
+        self.mic_hint.setStyleSheet('color:#2F5D50;font-weight:700;')
+        left.addWidget(self.mic_hint)
+
+        step = QHBoxLayout()
+        step.setSpacing(4)
+        self.stage_labels = {}
+        for key, name in self.STAGES:
+            lb = QLabel(name)
+            lb.setAlignment(Qt.AlignCenter)
+            self.stage_labels[key] = lb
+            step.addWidget(lb)
+        left.addLayout(step)
+
+        self.elapsed = QLabel(f'最长可说 {self.MAX_RECORD_SECONDS} 秒')
+        self.elapsed.setAlignment(Qt.AlignCenter)
+        self.elapsed.setStyleSheet('color:#6B7280;font-size:12px;')
+        left.addWidget(self.elapsed)
+
+        self.auto_speak = QCheckBox('回答后自动播报')
+        self.auto_speak.setChecked(True)
+        left.addWidget(self.auto_speak, alignment=Qt.AlignHCenter)
+
+        # 小工具行放左侧窄列：右侧留给对话区，避免把整页最小宽度撑大
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+        self.replay_btn = QPushButton('🔊 重播')
+        self.replay_btn.clicked.connect(self.replay_answer)
+        clear_btn = QPushButton('🧹 清空')
+        clear_btn.clicked.connect(self.clear_chat)
+        for b in (self.replay_btn, clear_btn):
+            b.setFixedHeight(28)
+            b.setStyleSheet(
+                'QPushButton{background:white;border:1px solid #D6E5D8;'
+                'border-radius:10px;padding:0 8px;}'
+                'QPushButton:hover{background:#EEF5EF;}')
+            tools.addWidget(b)
+        left.addLayout(tools)
+
+        left.addStretch(1)
+        body.addLayout(left, 0)
+
+        # ---------- 右列: 对话 ----------
+        right = QVBoxLayout()
+        right.setSpacing(6)
+
+        self.chat = QTextBrowser()
+        self.chat.setOpenLinks(False)
+        self.chat.anchorClicked.connect(self._on_anchor)
+        self.chat.setHtml(self._welcome_html())
+        right.addWidget(self.chat, 1)
+
+        row = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.setPlaceholderText('也可以打字提问，例如：三体在哪')
+        self.input.returnPressed.connect(self.on_send_text)
+        row.addWidget(self.input, 1)
+        send = QPushButton('发送')
+        send.setFixedHeight(34)
+        send.setStyleSheet(
+            'background:#2F5D50;color:white;border-radius:10px;'
+            'font-weight:700;padding:0 16px;')
+        send.clicked.connect(self.on_send_text)
+        row.addWidget(send)
+        right.addLayout(row)
+
+        quick = QHBoxLayout()
+        quick.setSpacing(6)
+        for phrase in ('三体在哪', 'Python 的书', '你好'):
+            b = QPushButton(phrase)
+            b.setFixedHeight(30)
+            b.setStyleSheet(
+                'QPushButton{background:#EEF5EF;border:1px solid #D6E5D8;'
+                'border-radius:10px;color:#2F5D50;font-weight:600;'
+                'padding:0 10px;}'
+                'QPushButton:hover{background:#D6E5D8;}')
+            b.clicked.connect(lambda _=False, t=phrase: self._ask_text(t))
+            quick.addWidget(b)
+        quick.addStretch(1)
+        right.addLayout(quick)
+
+        body.addLayout(right, 1)
+        root.addLayout(body, 1)
+
+    # --------------------------------------------------------------
+    # 状态 / 阶段
+    # --------------------------------------------------------------
+    def _welcome_html(self):
+        return (
+            '<div style="color:#374151;font-size:13px;">'
+            '<p>👋 我是图书馆机器人，可以问我：</p>'
+            '<p>· 「三体在哪」 —— 查书并带路<br>'
+            '· 「有没有 Python 的书」 —— 查馆藏<br>'
+            '· 「你好」 —— 随便聊聊</p>'
+            '<p style="color:#6B7280;">点左边大按钮说话，'
+            '或直接在下面打字。</p>'
+            '</div>')
+
+    def _set_stage(self, active):
+        colors = {
+            'recording': ('#E74C3C', '#FDECEA'),
+            'recognizing': ('#2980B9', '#EAF2FB'),
+            'thinking': ('#F39C12', '#FEF5E7'),
+            'speaking': ('#27AE60', '#EAF7F0'),
+        }
+        for key, _name in self.STAGES:
+            lb = self.stage_labels[key]
+            if key == active:
+                fg, bg = colors[key]
+                lb.setStyleSheet(
+                    f'background:{bg};color:{fg};border:1px solid {fg};'
+                    f'border-radius:9px;padding:2px 6px;font-size:11px;'
+                    f'font-weight:800;')
+            else:
+                lb.setStyleSheet(
+                    'color:#9CA3AF;border:1px solid #E5E7EB;'
+                    'border-radius:9px;padding:2px 6px;font-size:11px;')
+
+    def _set_status(self, text, kind='idle'):
+        palette = {
+            'idle': ('#EEF5EF', '#2F5D50', '#D6E5D8'),
+            'live': ('#FDECEA', '#B03A2E', '#E74C3C'),
+            'work': ('#FEF5E7', '#9C640C', '#F39C12'),
+            'done': ('#EAF7F0', '#1E7A50', '#27AE60'),
+            'err': ('#FDECEA', '#922B21', '#E74C3C'),
+        }
+        bg, fg, bd = palette.get(kind, palette['idle'])
+        self.status.setText(text)
+        self.status.setStyleSheet(
+            f'background:{bg};color:{fg};border:1px solid {bd};'
+            f'border-radius:12px;padding:3px 12px;font-weight:600;')
+
+    # --------------------------------------------------------------
+    # 麦克风
+    # --------------------------------------------------------------
+    def on_mic_clicked(self):
+        if self._worker is not None and self._worker.isRunning():
+            # 再点一下 = 提前结束
+            self._worker.request_stop()
+            self.mic_hint.setText('正在结束…')
+            return
+        self.start_listen()
+
+    def start_listen(self):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._ask_worker is not None and self._ask_worker.isRunning():
+            return
+
+        self._stop_event = threading.Event()
+        self._worker = VoiceWorker(
+            seconds=self.MAX_RECORD_SECONDS,
+            auto_stop=True,
+            max_seconds=float(self.MAX_RECORD_SECONDS),
+            stop_event=self._stop_event,
+        )
+        self._worker.level.connect(self.mic.set_level)
+        self._worker.stage.connect(self._on_worker_stage)
+        self._worker.finished.connect(self._on_voice_result)
+        self._worker.error.connect(self._on_worker_error)
+
+        self.mic.set_state('listening')
+        self.mic_hint.setText('正在聆听…说完自动停，或再点一下结束')
+        self._set_status('聆听中…', 'live')
+        self._set_stage('recording')
+        self._rec_seconds = 0.0
+        self._rec_timer.start()
+        self._append('<p style="color:#B03A2E;">🎙 <b>正在录音…</b></p>')
+        self._worker.start()
+
+    def _tick_record(self):
+        self._rec_seconds += 0.1
+        self.elapsed.setText(
+            f'已录 {self._rec_seconds:.1f}s / 最长 {self.MAX_RECORD_SECONDS}s')
+
+    def _on_worker_stage(self, stage):
+        self._set_stage(stage)
+        if stage == 'recording':
+            return
+        self._rec_timer.stop()
+        self.mic.set_state('busy')
+        if stage == 'recognizing':
+            self.mic_hint.setText('识别中…')
+            self._set_status('识别中…', 'work')
+        elif stage == 'thinking':
+            self.mic_hint.setText('思考中…')
+            self._set_status('思考中…', 'work')
+
+    def _on_voice_result(self, text, answer):
+        self._rec_timer.stop()
+        self.mic.set_state('idle')
+        self.mic.set_level(0.0)
+        self.elapsed.setText(f'最长可说 {self.MAX_RECORD_SECONDS} 秒')
+
+        if not text:
+            self.mic_hint.setText('没听清，点我再试一次')
+            self._set_status('没听清 · 请再说一次', 'err')
+            self._set_stage(None)
+            self._append(
+                '<p style="color:#922B21;">❌ 没有识别到语音，'
+                '请靠近麦克风再说一次。</p>')
+            self._scroll_end()
+            return
+
+        self.mic_hint.setText('点击说话')
+        self._set_status('完成', 'done')
+        self._append(
+            f'<p style="color:#1F2937;">👤 <b>你：</b>'
+            f'{html_escape(text)}</p>')
+        self._show_answer(answer)
+
+    def _on_worker_error(self, err):
+        self._rec_timer.stop()
+        self.mic.set_state('idle')
+        self.mic_hint.setText('出错了，点我重试')
+        self._set_status('出错', 'err')
+        self._set_stage(None)
+        self._append(
+            f'<p style="color:#922B21;">❌ 语音链路出错：'
+            f'{html_escape(err)}</p>')
+        self._scroll_end()
+
+    # --------------------------------------------------------------
+    # 打字提问
+    # --------------------------------------------------------------
+    def on_send_text(self):
+        self._ask_text(self.input.text().strip())
+
+    def _ask_text(self, text):
+        if not text:
+            return
+        running = (
+            (self._worker is not None and self._worker.isRunning())
+            or (self._ask_worker is not None and self._ask_worker.isRunning())
+        )
+        if running:
+            return
+        self.input.clear()
+        self._append(
+            f'<p style="color:#1F2937;">👤 <b>你：</b>'
+            f'{html_escape(text)}</p>')
+        self._set_status('思考中…', 'work')
+        self.mic.set_state('busy')
+        self._set_stage('thinking')
+        self._ask_worker = AskWorker(text)
+        self._ask_worker.finished.connect(self._on_ask_result)
+        self._ask_worker.error.connect(self._on_worker_error)
+        self._ask_worker.start()
+
+    def _on_ask_result(self, _text, answer):
+        self.mic.set_state('idle')
+        self._set_status('完成', 'done')
+        self._show_answer(answer)
+
+    # --------------------------------------------------------------
+    # 回答 & 播报
+    # --------------------------------------------------------------
+    def _show_answer(self, answer):
+        self._last_answer = answer or ''
+        self._append(
+            f'<p style="color:#0F766E;">🤖 <b>Library AI：</b>'
+            f'{html_escape(self._last_answer)}</p>'
+            f'<p><a href="speak">🔊 播放这句话</a></p>')
+        self._scroll_end()
+        if self.auto_speak.isChecked() and self._last_answer:
+            self.speak(self._last_answer)
+
+    def replay_answer(self):
+        if not self._last_answer:
+            self._append('<p style="color:#6B7280;">还没有可播报的回答</p>')
+            self._scroll_end()
+            return
+        self.speak(self._last_answer)
+
+    def speak(self, text):
+        self._set_stage('speaking')
+        self._set_status('播报中…', 'work')
+        self._tts_worker = TTSWorker(text)
+        self._tts_worker.failed.connect(self._on_tts_failed)
+        self._tts_worker.done.connect(self._on_tts_done)
+        self._tts_worker.start()
+
+    def _on_tts_done(self):
+        self._set_stage(None)
+        self._set_status('完成', 'done')
+
+    def _on_tts_failed(self, msg):
+        self._set_stage(None)
+        self._append(
+            f'<p style="color:#92400E;">⚠️ 语音播报不可用：'
+            f'{html_escape(msg)}</p>')
+        self._scroll_end()
+
+    def _on_anchor(self, url):
+        if url.toString() == 'speak':
+            self.replay_answer()
+
+    def clear_chat(self):
+        self.chat.setHtml(self._welcome_html())
+        self._last_answer = ''
+        self._set_stage(None)
+        self._set_status('待机 · 点麦克风开始说话', 'idle')
+
+    # --------------------------------------------------------------
+    # 小工具
+    # --------------------------------------------------------------
+    def _append(self, html_text):
+        cursor = self.chat.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.chat.setTextCursor(cursor)
+        self.chat.insertHtml(html_text)
+
+    def _scroll_end(self):
+        sb = self.chat.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+
 class BookDetailPage(QWidget):
     """书籍详情页"""
     def __init__(self, book_data=None):
@@ -1539,18 +2083,21 @@ class BookDetailPage(QWidget):
                 conn.close()
 
         # ---------- 2. 把位置发给机器人 ----------
-        # 优先: 若 bookmarks.json 里有该书名的锚点, 直接用坐标派单
-        # (这就是语音找书 + 地图点击走的链路)
-        # 降级: 沿用旧的 A/B/C/D 区号派单
+        # Moss 优化 (2026-09-23): 这里以前依赖数据库 location 字段拼 'A/B/C/D',
+        # 实际书名×位置匹配几乎全是错的。统一走坐标派单:
+        #  1) bookmarks.json 里取该书名的 goal_x/goal_y (主线)
+        #  2) 没有锚点 → 用数据库 location 字符串当 “target name” 发送给机器人,
+        #     由 goal_bridge 看到不在 A/B/C/D 表时拒收并提示
         from robot_comm import send_goto_xy, send_go_to
         bm = self._load_bookmarks()
         anchor = bm.get(book_name) if bm else None
+        via = '坐标'
         if anchor and anchor.get('goal_x') is not None:
             ok, robot_msg = send_goto_xy(
                 anchor['goal_x'], anchor['goal_y'],
                 book_name=book_name)
-            via = '坐标'
         else:
+            # 没有锚点时, 保留旧 fallback: 走 A/B/C/D 区号
             ok, robot_msg = send_go_to(location or "", book_name)
             via = '区号'
         print(f"派单方式: {via}; ok={ok}; message={robot_msg}", flush=True)
@@ -1774,13 +2321,17 @@ class MainWindow(QMainWindow):
         self.borrow_page = BorrowPage()
         self.profile_page = ProfilePage()
         self.robot_page = RobotPage()
+        self.voice_page = VoicePage()
+        self.map_page = MapPage()
 
         pages=[
         ("主页面",self.home_page),
         ("图书查询",self.search_page),
         ("借阅管理",self.borrow_page),
         ("个人中心",self.profile_page),
-        ("机器人",self.robot_page)
+        ("机器人",self.robot_page),
+        ("语音助手",self.voice_page),
+        ("地图",self.map_page)
         ]
         for _,p in pages:self.stack.addWidget(p)
         ai.clicked.connect(lambda:self.stack.setCurrentIndex(4))
@@ -1788,7 +2339,9 @@ class MainWindow(QMainWindow):
         for i,(n,_) in enumerate(pages):
             b=QPushButton("■ "+n)
             b.clicked.connect(lambda checked=False,x=i:self.stack.setCurrentIndex(x))
-            b.setStyleSheet("QPushButton{color:white;background:transparent;border:none;text-align:left;padding:10px;font-size:11px;font-weight:600;}QPushButton:hover{background:#4F7A6D;border-radius:12px;}")
+            # padding 由 10px 收到 7px: 导航加到 7 项后, 原内边距会把
+            # 主窗口最小高度顶到 440 (>480 屏可用的 436)
+            b.setStyleSheet("QPushButton{color:white;background:transparent;border:none;text-align:left;padding:7px;font-size:11px;font-weight:600;}QPushButton:hover{background:#4F7A6D;border-radius:12px;}")
             nv.addWidget(b)
         nv.addStretch()
 

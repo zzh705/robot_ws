@@ -11,6 +11,50 @@ import numpy as np
 
 
 
+def _list_capture_cards():
+    """用 `arecord -l` 列出所有能录音的声卡号, 按出现顺序返回。"""
+    try:
+        out = subprocess.run(
+            ['arecord', '-l'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+        ).stdout
+    except Exception:
+        return []
+    cards = []
+    for line in out.splitlines():
+        if not line.startswith('card '):
+            continue
+        try:
+            num = int(line.split()[1].rstrip(':'))
+        except (IndexError, ValueError):
+            continue
+        if num not in cards:
+            cards.append(num)
+    return cards
+
+
+def _resolve_alsa_device(device):
+    """把 device 参数解析成 arecord -D 可用的设备名。
+
+    旧版把 "plughw:1,0" 写死在 __init__ 里, 换一台只有 card 0 的板子
+    就会 `Cannot get card index for 1` 直接打不开麦克风。现在:
+      * 显式传字符串  -> 原样使用(保留手工指定能力)
+      * 传数字/None   -> 先按 arecord -l 自动探测第一个采集声卡
+    """
+    if isinstance(device, str) and device.strip():
+        return device.strip()
+    cards = _list_capture_cards()
+    if isinstance(device, int) and device >= 0:
+        if not cards or device in cards:
+            return f'plughw:{device},0'
+    if cards:
+        return f'plughw:{cards[0]},0'
+    return 'plughw:0,0'
+
+
 class AudioRecorder:
 
     """
@@ -79,9 +123,10 @@ class AudioRecorder:
 
 
 
-        # RDK X5 上已经验证成功的 ALSA 设备
-
-        self.alsa_device = "plughw:1,0"
+        # ALSA 采集设备：优先显式指定，否则按 arecord -l 自动探测。
+        # （旧版把 plughw:1,0 写死在代码里；本机只有 card 0，
+        #   会直接报 "Cannot get card index for 1" 导致录音打不开。）
+        self.alsa_device = _resolve_alsa_device(device)
 
 
 

@@ -1,77 +1,77 @@
 {
-  "map": "/home/sunrise/robot_ws/maps/room",
-  "image": "room.pgm",
+  "map": "/home/sunrise/robot_ws/maps/library",
+  "image": "library.pgm",
   "resolution": 0.05,
   "origin": [
+    -3.73,
     -3.47,
-    -3.82,
     0.0
   ],
-  "width": 156,
-  "height": 144,
+  "width": 161,
+  "height": 134,
   "inflate_radius": 0.28,
   "books": {
     "红星照耀中国": {
-      "x": 0.646,
-      "y": 0.966,
+      "x": 0.617,
+      "y": 0.999,
       "pixel": [
-        81.81,
-        47.78
+        86.44,
+        44.11
       ],
-      "area": 27,
-      "goal_x": 1.655,
-      "goal_y": 0.155,
-      "goal_pixel": [
-        102,
-        64
-      ],
-      "goal_clearance": 1.134
-    },
-    "活着": {
-      "x": 2.977,
-      "y": 1.015,
-      "pixel": [
-        128.44,
-        46.8
-      ],
-      "area": 25,
-      "goal_x": 2.005,
-      "goal_y": 0.155,
+      "area": 18,
+      "goal_x": 1.745,
+      "goal_y": 0.355,
       "goal_pixel": [
         109,
-        64
+        57
       ],
-      "goal_clearance": 1.134
+      "goal_clearance": 1.185
+    },
+    "活着": {
+      "x": 2.968,
+      "y": 0.948,
+      "pixel": [
+        133.45,
+        45.14
+      ],
+      "area": 22,
+      "goal_x": 1.945,
+      "goal_y": 0.155,
+      "goal_pixel": [
+        113,
+        61
+      ],
+      "goal_clearance": 1.172
     },
     "三体": {
-      "x": 3.124,
-      "y": -0.761,
+      "x": 3.105,
+      "y": -0.747,
       "pixel": [
-        131.38,
-        82.31
+        136.21,
+        79.04
       ],
-      "area": 29,
-      "goal_x": 1.955,
-      "goal_y": -0.195,
+      "area": 24,
+      "goal_x": 1.895,
+      "goal_y": -0.295,
       "goal_pixel": [
-        108,
-        71
+        112,
+        70
       ],
-      "goal_clearance": 1.142
+      "goal_clearance": 1.17
     },
     "平凡的世界": {
-      "x": 0.725,
-      "y": -0.905,
+      "x": 0.72,
+      "y": -0.914,
       "pixel": [
-        83.4,
-        85.2
+        88.5,
+        82.38
       ],
-      "area": 10,
-      "goal_x": 1.805,
+      "area": 8,
+      "goal_x": 1.795,
       "goal_y": -0.195,
       "goal_pixel": [
-        105,
-        71
+        110,
+        68
       ],
       "goal_clearance": 1.221
     }

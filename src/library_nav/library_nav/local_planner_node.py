@@ -47,7 +47,14 @@ class DWAController(Node):
 
         self.declare_parameter('inflate_radius', 0.25)  # 障碍膨胀半径(半车宽+安全) m
         self.declare_parameter('goal_tolerance', 0.15)  # 到达判定 m
-        self.declare_parameter('lookahead', 0.5)        # 路径前瞻距离 m
+        self.declare_parameter('lookahead', 0.4)        # 路径前瞻距离 m
+
+        # ---- scan 处理 ----
+        self.declare_parameter('laser_frame', 'laser')    # /scan 的坐标系名
+        self.declare_parameter('use_tf_scan', True)      # False 时回退到 laser_yaw_offset
+        self.declare_parameter('laser_yaw_offset', 0.0)  # 回退模式下, laser→base 的额外 yaw (rad)
+        self.declare_parameter('scan_min_range', 0.20)   # 雷达盲区点阈值 (m)
+        self.declare_parameter('emergency_stop_dist', 0.20)  # 前方急停距离 (m)
 
         # 打分权重(调参时改这里)
         self.declare_parameter('w_heading', 0.4)
@@ -56,7 +63,7 @@ class DWAController(Node):
         self.declare_parameter('w_path', 0.1)
         self.declare_parameter('w_prog', 0.3)  # 推进分: 奖励"向目标靠近"轨迹, 抑制原地打转
 
-        self.declare_parameter('control_period', 0.1)  # 决策周期 s
+        self.declare_parameter('control_period', 0.05)  # 决策周期 s
 
         # =====================
         # 读取参数
@@ -73,6 +80,11 @@ class DWAController(Node):
         self.inflate = self.get_parameter('inflate_radius').value
         self.goal_tol = self.get_parameter('goal_tolerance').value
         self.lookahead = self.get_parameter('lookahead').value
+        self.laser_frame = self.get_parameter('laser_frame').value
+        self.use_tf_scan = self.get_parameter('use_tf_scan').value
+        self.laser_yaw_offset = self.get_parameter('laser_yaw_offset').value
+        self.scan_min_range = self.get_parameter('scan_min_range').value
+        self.emergency_stop_dist = self.get_parameter('emergency_stop_dist').value
         self.w_heading = self.get_parameter('w_heading').value
         self.w_dist = self.get_parameter('w_dist').value
         self.w_vel = self.get_parameter('w_vel').value
@@ -144,25 +156,28 @@ class DWAController(Node):
         angles = msg.angle_min + np.arange(n) * msg.angle_increment
         ranges = np.asarray(msg.ranges, dtype=np.float64)
 
-        # 过滤: 忽略 <0.2m 的点(雷达自身/车体反射的固定盲区点, 非真实障碍)
+        # 过滤: 忽略 <scan_min_range m 的点(雷达自身/车体反射的固定盲区点)
         # 雷达装在车顶, 支架/线缆等结构会在固定方向产生 0.1~0.2m 反射,
         # 这些点永远在膨胀半径内, 会让 DWA 认为被堵死而无法起步。
-        valid = np.isfinite(ranges) & (ranges > 0.2) \
-            & (ranges < msg.range_max - 0.1)
+        valid = (np.isfinite(ranges)
+                 & (ranges > self.scan_min_range)
+                 & (ranges < msg.range_max - 0.1))
         r = ranges[valid]
         a = angles[valid]
 
-        # 障碍点在机器人(sensor)坐标系下的平面坐标
+        # 障碍点在 laser 系下的平面坐标
         local = np.stack([
             r * np.cos(a),
             r * np.sin(a),
         ], axis=1)
 
-        # 粗略转到 odom 系(用车体位姿旋转 + 平移)
-        x, y, theta = self.pose
-        ct, st = math.cos(theta), math.sin(theta)
-        rot = np.array([[ct, -st], [st, ct]])
-        self.scan_points = local @ rot.T + np.array([x, y])
+        # 关键修复: 用 TF 把 laser → odom(含 URDF 里 laser 的 yaw=π 安装偏转)
+        # 旧实现 "忽略 TF", 而 URDF 里 base_link→laser 是 rpy="0 0 π",
+        # 等于把雷达前后镜像了, DWA 会直冲路面向走而不避障.
+        odom_pts = self._laser_to_odom(local)
+        if odom_pts is None:
+            return
+        self.scan_points = odom_pts
         self.scan_count = len(self.scan_points)
         now = time.monotonic()
         if now - getattr(self, '_obj_t_log', 0) > 5.0:
@@ -195,6 +210,28 @@ class DWAController(Node):
                     f'near<0.8m={len(near)} '
                     f'min_near={(dist.min() if len(dist) else -1):.2f} '
                     f'nearest5={angstr}')
+
+    def _laser_to_odom(self, local):
+        """laser 系点 -> odom 系; use_tf_scan=False 时回退到位姿+偏移."""
+        if local is None or len(local) == 0:
+            return None
+        if self.use_tf_scan:
+            try:
+                tx, ty, yaw = self._lookup_yaw('odom', self.laser_frame)
+            except Exception as e:
+                self.log_throttled(
+                    f'{self.laser_frame}->odom TF 不可用: {e}', interval=2.0)
+                return None
+        else:
+            # 回退: 用机器人位姿 + 已知偏转(URDF 没声明时填这个)
+            _, _, yaw = self.pose
+            yaw += self.laser_yaw_offset
+            tx, ty = self.pose[0], self.pose[1]
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        return np.stack([
+            tx + local[:, 0] * cy - local[:, 1] * sy,
+            ty + local[:, 0] * sy + local[:, 1] * cy,
+        ], axis=1)
 
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
@@ -294,6 +331,20 @@ class DWAController(Node):
             self.publish_cmd(0.0, 0.0)
             self.log_throttled('Goal reached — stop.')
             return
+
+        # ---- 紧急停车: 前方近距离有障碍, 立刻 (0,0), 不经打分 ----
+        # DWA 碰撞检查可能因为 'safe' 判定为可行, 但有穿车体空档;
+        # 这个急停是物理硬保护, 防止"打分最高 = 直撞".
+        if self.scan_points is not None and len(self.scan_points):
+            front_min = self._front_min_dist()
+            if front_min is not None and front_min < self.emergency_stop_dist:
+                self.log_throttled(
+                    f'E-STOP: front={front_min:.2f}m < '
+                    f'{self.emergency_stop_dist:.2f}m')
+                self._sm_v = 0.0
+                self._sm_w = 0.0
+                self.publish_cmd(0.0, 0.0)
+                return
 
         # ---- 0.5) 大航向偏差: 先原地回正再前进 ----
         # 若当前车头与"指向目标方向"偏差过大还同时给 vx,
@@ -540,6 +591,26 @@ class DWAController(Node):
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
         return float(d.min())
 
+    def _front_min_dist(self):
+        """车体坐标系下, 前方 ±45° 扇区内最近障碍距离(m).
+        用于急停, 与 TF 框架无关 -> 用 self.pose 估计车体方向."""
+        if self.scan_points is None or len(self.scan_points) == 0:
+            return None
+        x, y, theta = self.pose
+        dx = self.scan_points[:, 0] - x
+        dy = self.scan_points[:, 1] - y
+        dist = np.hypot(dx, dy)
+        if len(dist) == 0:
+            return None
+        # 转到车体坐标系
+        ct, st = math.cos(theta), math.sin(theta)
+        bx =  ct * dx + st * dy
+        by = -st * dx + ct * dy
+        front = (bx > 0.05) & (np.abs(by) < bx * math.tan(math.radians(45)))
+        if not front.any():
+            return float('inf')
+        return float(dist[front].min())
+
     def min_obstacle_dist(self, traj):
         """轨迹到最近障碍的最小距离(跳过起点=车当前所在位置).
 
@@ -563,13 +634,25 @@ class DWAController(Node):
         if not traj_arr:
             return 999.0  # 只有原地转/静止 → 无所谓碰撞
         traj_arr = np.asarray(traj_arr, dtype=np.float64)
-        # 计算每个轨迹点(后续)到最近障碍点的距离
-        # 向量化: 对每个轨迹点算全场最小 => 再取全局最小
-        d = np.sqrt(
-            ((traj_arr[:, None, :] - self.scan_points[None, :, :]) ** 2)
-            .sum(axis=2)
-        )
-        return float(d.min())
+        # 用 KDTree 加速: 9*sample_v*sample_w 个轨迹点 vs 几百点云
+        # 全广播 O(N*M) 在 20Hz 下 CPU 偏高, 改 KDTree 后基本 <1ms
+        try:
+            from scipy.spatial import cKDTree
+            tree = getattr(self, '_scan_tree', None)
+            if (tree is None or tree.n != len(self.scan_points)
+                    or getattr(self, '_scan_tree_id', -1) != id(self.scan_points)):
+                tree = cKDTree(self.scan_points)
+                self._scan_tree = tree
+                self._scan_tree_id = id(self.scan_points)
+            d, _ = tree.query(traj_arr, k=1, workers=1)
+            return float(d.min())
+        except Exception:
+            # scipy 不可用时的兜底: 退回到纯 numpy 全广播
+            d = np.sqrt(
+                ((traj_arr[:, None, :] - self.scan_points[None, :, :]) ** 2)
+                .sum(axis=2)
+            )
+            return float(d.min())
 
     @staticmethod
     def norm_angle(a):

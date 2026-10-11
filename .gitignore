@@ -14,3 +14,8 @@ library_gui/voice/whisper.cpp/
 
 # 运行时配置(含本地凭据, 不入库)
 library_gui/.env
+
+# 地图版本仓运行期数据与本地备份(不入库)
+maps/history/
+*.bak.*
+.bak/

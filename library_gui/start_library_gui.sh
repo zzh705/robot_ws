@@ -2,11 +2,15 @@
 # ============================================================
 #  start_library_gui.sh — 图书馆机器人上位机一键启动 / 开机自启
 #
-#  拉起两样东西：
-#    1) goal_bridge_node   监听 127.0.0.1:9000
-#                          GUI 的 find_book 请求 → ROS2 /goal_pose
-#    2) GUI.py             PySide6 图书馆界面（跑在 :0.0 桌面）
-#    3) hobot_tts          订阅 /tts_text，把 AI 回答念出来（RUN_TTS=1，默认开）
+#  拉起四样东西：
+#    1) goal_bridge_node       监听 127.0.0.1:9000
+#    2) 统一导航栈 robot_nav_all (rplidar + STM32 + map_server +
+#                                A* + DWA + PID + scan 软更新层)
+#    3) GUI.py                 PySide6 图书馆界面（跑在 :0.0 桌面）
+#    4) hobot_tts              订阅 /tts_text，把 AI 回答念出来
+#
+#  默认 RUN_NAV=1：导航栈会拉起；GUI 点击地图后 /goal_pose 会真的驱动小车。
+#  只想调试 GUI 不动车：RUN_NAV=0 ./start_library_gui.sh start
 #
 #  用法：
 #    ./start_library_gui.sh            启动（默认）
@@ -14,28 +18,24 @@
 #    ./start_library_gui.sh stop
 #    ./start_library_gui.sh restart
 #    ./start_library_gui.sh status
-#
-#  开关（环境变量）：
-#    RUN_BRIDGE=0   只起界面，不起 goal_bridge
-#    RUN_GUI=0      只起 goal_bridge（无桌面时用）
-#    RUN_NAV=1      额外拉起导航三层（A*/DWA/PID）—— 默认关闭！
-#                   打开后 /goal_pose 会真的驱动小车，务必先架空轮子
-#    RUN_TTS=0      不起语音播报（hobot_tts）
+#    ./start_library_gui.sh start_nav  只拉导航栈
+#    ./start_library_gui.sh stop_nav   只停导航栈
+#    ./start_library_gui.sh diag       快速诊断 ROS 链路
 #
 #  开机自启：
 #    ~/.config/autostart/library-gui.desktop 以 sunrise 身份调用本脚本
-#    （模板见同目录 library-gui.desktop）
 #
-#  日志：本目录 logs/ 下 goal_bridge.log / gui.log / autostart.log
+#  日志：本目录 logs/ 下 goal_bridge.log / gui.log / autostart.log / nav.log
 #
 #  幂等：已在跑的不重复拉起；9000 被别的进程占用时【不抢端口】，只告警。
 # ============================================================
 
-set -u
+set +u
 
 APP_DIR="/home/sunrise/robot_ws/library_gui"
 WS_DIR="/home/sunrise/robot_ws"
 ROS_SETUP="/opt/ros/humble/setup.bash"
+TROS_SETUP="/opt/tros/humble/setup.bash"
 WS_SETUP="${WS_DIR}/install/setup.bash"
 PYTHON="/usr/bin/python3"
 
@@ -54,18 +54,23 @@ LOG_DIR="${APP_DIR}/logs"
 BRIDGE_LOG="${LOG_DIR}/goal_bridge.log"
 GUI_LOG="${LOG_DIR}/gui.log"
 MAIN_LOG="${LOG_DIR}/autostart.log"
+NAV_LOG="${LOG_DIR}/nav.log"
 TTS_LOG="${LOG_DIR}/tts.log"
 
 RUN_BRIDGE="${RUN_BRIDGE:-1}"
 RUN_GUI="${RUN_GUI:-1}"
-RUN_NAV="${RUN_NAV:-0}"
+RUN_NAV="${RUN_NAV:-1}"
 RUN_TTS="${RUN_TTS:-1}"
 
 mkdir -p "${LOG_DIR}"
 
+# 完整 ROS+TROS+ws 环境 (供 setsid 子 shell 用)
+# 必须是纯命令, 不能依赖 shell 函数( setsid 子 shell 里函数不会传过来)
+ROS_ENV_HEAD='source /opt/ros/humble/setup.bash; source /opt/tros/humble/setup.bash; source /home/sunrise/robot_ws/install/setup.bash; export AMENT_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble:/home/sunrise/robot_ws/install; export LD_LIBRARY_PATH=/opt/tros/humble/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/usr/hobot/lib:/app/lib:/middleware/lib:/system/lib:/system/usr/lib:/lib:/usr/lib/aarch64-linux-gnu; export TROS_DISTRO=humble; export PATH=/opt/tros/humble/bin:/opt/ros/humble/bin:$PATH;'
+
 # 日志轮转: 单文件超 5MB 时压缩为 .1.gz, 依次顺延, 最多保留 3 份
 rotate_logs() {
-    for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${LOG_DIR}/nav.log" "${TTS_LOG}"; do
+    for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${NAV_LOG}" "${TTS_LOG}"; do
         [ -f "$f" ] || continue
         size_k="$(du -k "$f" 2>/dev/null | awk '{print $1}')"
         [ "${size_k:-0}" -gt 5120 ] || continue
@@ -88,14 +93,10 @@ log() {
 #  探测小工具
 # ------------------------------------------------------------
 
-# 9000 是否已被监听。
-# 只看端口状态、不看进程名：非 root 身份下 ss -p 看不到别人的进程，
-# 若拿“进程名非空”当判据，会把“别人占着”误判成“端口空闲”而去抢。
 port_listening() {
     ss -lnt 2>/dev/null | grep -qF ":${BRIDGE_PORT} "
 }
 
-# 9000 当前持有者进程名（best-effort，非 root 时可能为空）
 port_owner() {
     ss -lntp 2>/dev/null \
         | grep -F ":${BRIDGE_PORT} " \
@@ -109,6 +110,14 @@ bridge_pids() {
 
 gui_pids() {
     pgrep -f "python3 GUI.py" 2>/dev/null | grep -v -e "^$$\$" -e "^${PPID}\$"
+}
+
+nav_pids() {
+    pgrep -f "robot_nav_all.launch.py" 2>/dev/null
+}
+
+tts_pids() {
+    pgrep -f "lib/hobot_tts/hobot_tts" 2>/dev/null
 }
 
 wait_for_port() {
@@ -129,6 +138,25 @@ wait_for_display() {
     return 1
 }
 
+# 健康探测: 节点数 + 关键 topic 是否齐
+# 这是"GUI 点了地图车不动"问题的快速自检, 不通过就在 status/diag 提示
+probe_nav_stack() {
+    local n t
+    n="$(timeout 6 ros2 node list 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "${n:-0}" -lt 4 ]; then
+        log "[health] ros2 node 只有 ${n} 个 (<4), 栈未起"
+        return 1
+    fi
+    for t in /goal_pose /scan /odom /cmd_vel /cmd_vel_plan /global_path /map; do
+        if ! timeout 3 ros2 topic list 2>/dev/null | grep -qxF "$t"; then
+            log "[health] 缺 topic $t"
+            return 1
+        fi
+    done
+    log "[health] OK: ${n} 节点, 关键 topic 齐"
+    return 0
+}
+
 # ------------------------------------------------------------
 #  启动 goal_bridge
 # ------------------------------------------------------------
@@ -144,19 +172,16 @@ start_bridge() {
             log "[bridge] 已在运行（pid $(bridge_pids | tr '\n' ' ')），跳过"
         else
             log "[bridge] ${BRIDGE_PORT} 已被其他进程监听（非本用户时看不到进程名，多半是 root 起的 goal_bridge）"
-            log "[bridge]    按“不抢端口”处理，跳过启动。要让本脚本接管，请先停掉占用者"
+            log "[bridge]    按"不抢端口"处理，跳过启动。要让本脚本接管，请先停掉占用者"
         fi
         return 0
     fi
 
     log "[bridge] 启动 goal_bridge_node（${BRIDGE_HOST}:${BRIDGE_PORT}）"
 
-    setsid nohup bash -c "
-        source '${ROS_SETUP}'
-        source '${WS_SETUP}'
-        exec ros2 run library_nav goal_bridge_node \
-            --ros-args -p tcp_host:=${BRIDGE_HOST} -p tcp_port:=${BRIDGE_PORT}
-    " >> "${BRIDGE_LOG}" 2>&1 &
+    setsid nohup bash -c "${ROS_ENV_HEAD} exec ros2 run library_nav goal_bridge_node \
+        --ros-args -p tcp_host:=${BRIDGE_HOST} -p tcp_port:=${BRIDGE_PORT}" \
+        >> "${BRIDGE_LOG}" 2>&1 &
 
     if wait_for_port; then
         log "[bridge] OK：${BRIDGE_PORT} 已监听"
@@ -168,39 +193,71 @@ start_bridge() {
 }
 
 # ------------------------------------------------------------
-#  启动导航三层（默认关闭）
+#  启动统一导航栈 (默认开启)
 # ------------------------------------------------------------
 
 start_nav() {
     if [ "${RUN_NAV}" != "1" ]; then
-        log "[nav] RUN_NAV=0，跳过（默认不起导航，避免开机就动）"
+        log "[nav] RUN_NAV=0，跳过（用户显式关闭，GUI 不会让轮子动）"
         return 0
     fi
 
-    if pgrep -f "nav.launch.py" >/dev/null 2>&1; then
-        log "[nav] 已在运行，跳过"
+    if [ -n "$(nav_pids)" ]; then
+        log "[nav] 已在运行（pid $(nav_pids | tr '\n' ' ')），跳过（停栈用 $0 stop_nav）"
         return 0
     fi
 
-    log "[nav] !! 拉起导航三层，/goal_pose 将真的驱动小车，确认轮子已架空"
+    log "[nav] !! 拉起统一导航栈 (robot_nav_all)"
+    log "[nav]    地图按钮派单将驱动小车，确认轮子已架空"
+    log "[nav]    不动车: RUN_NAV=0 ./start_library_gui.sh start"
 
-    setsid nohup bash -c "
-        source '${ROS_SETUP}'
-        source '${WS_SETUP}'
-        exec ros2 launch library_nav nav.launch.py
-    " >> "${LOG_DIR}/nav.log" 2>&1 &
+    setsid nohup bash -c "${ROS_ENV_HEAD} exec ros2 launch robot_bringup robot_nav_all.launch.py \
+        map_yaml:=/home/sunrise/robot_ws/maps/library.yaml \
+        enable_slam:=false \
+        enable_nav:=true \
+        enable_gamepad:=false \
+        enable_rviz:=false \
+        max_linear_x:=0.45 \
+        max_angular_z:=0.9 \
+        control_period:=0.05" \
+        >> "${NAV_LOG}" 2>&1 &
 
-    sleep 3
-    log "[nav] 已下发启动，日志 ${LOG_DIR}/nav.log"
+    # 启动后健康探测: 节点 + 关键 topic 齐了才算成功
+    local i
+    for i in 1 2 3 4 5 6; do
+        sleep 4
+        if probe_nav_stack; then
+            log "[nav] 健康 OK（${i}*4s 后）"
+            return 0
+        fi
+    done
+    log "[nav] !! 健康探测失败，日志 ${NAV_LOG}"
+    return 1
+}
+
+stop_nav() {
+    if [ -z "$(nav_pids)" ]; then
+        log "[nav] 没在跑"
+        return 0
+    fi
+    log "[nav] 停统一导航栈 pid=$(nav_pids | tr '\n' ' ')"
+    pkill -f "robot_nav_all.launch.py"
+    pkill -f "global_planner_node"
+    pkill -f "local_planner_node"
+    pkill -f "pid_controller_node"
+    pkill -f "map_server"
+    pkill -f "lifecycle_manager"
+    pkill -f "rplidar_node"
+    pkill -f "robot_state_publisher"
+    pkill -f "stm32_bridge"
+    pkill -f "static_transform_publisher"
+    sleep 1
+    log "[nav] 已停"
 }
 
 # ------------------------------------------------------------
 #  启动 GUI
 # ------------------------------------------------------------
-
-tts_pids() {
-    pgrep -f "lib/hobot_tts/hobot_tts" 2>/dev/null
-}
 
 start_tts() {
     if [ "${RUN_TTS}" != "1" ]; then
@@ -221,11 +278,8 @@ start_tts() {
 
     log "[tts] 启动 hobot_tts（订阅 /tts_text）"
 
-    setsid nohup bash -c "
-        source '${ROS_SETUP}'
-        source '${WS_SETUP}'
-        exec ros2 run hobot_tts hobot_tts
-    " >> "${TTS_LOG}" 2>&1 &
+    setsid nohup bash -c "${ROS_ENV_HEAD} cd /opt/tros/humble/lib/hobot_tts && exec ros2 run hobot_tts hobot_tts --ros-args -p playback_device:=plughw:1,0" \
+        >> "${TTS_LOG}" 2>&1 &
 
     sleep 3
     if [ -n "$(tts_pids)" ]; then
@@ -287,6 +341,8 @@ stop_all() {
         log "[gui] 本来就没在跑"
     fi
 
+    stop_nav
+
     if [ -n "$(bridge_pids)" ]; then
         log "[bridge] 停止 pid $(bridge_pids | tr '\n' ' ')"
         pkill -f "goal_bridge_node" \
@@ -294,15 +350,6 @@ stop_all() {
         sleep 1
     else
         log "[bridge] 本来就没在跑"
-    fi
-
-    if pgrep -f "nav.launch.py" >/dev/null 2>&1; then
-        log "[nav] 停止"
-        pkill -f "nav.launch.py"
-        pkill -f "global_planner_node"
-        pkill -f "local_planner_node"
-        pkill -f "pid_controller_node"
-        sleep 1
     fi
 
     if [ -n "$(tts_pids)" ]; then
@@ -315,12 +362,12 @@ stop_all() {
 }
 
 status_all() {
-    local owner bp gp listen_state
+    local owner bp gp nav_count topic_count
     owner="$(port_owner)"
     bp="$(bridge_pids | tr '\n' ' ')"
     gp="$(gui_pids | tr '\n' ' ')"
-    listen_state="否"
-    port_listening && listen_state="是（持有者：${owner:-未知/其他用户}）"
+    nav_count="$(timeout 4 ros2 node list 2>/dev/null | wc -l | tr -d ' ')"
+    topic_count="$(timeout 4 ros2 topic list 2>/dev/null | wc -l | tr -d ' ')"
 
     echo "---------- 图书馆机器人上位机 状态 ----------"
     if [ -n "${bp}" ]; then
@@ -328,16 +375,34 @@ status_all() {
     else
         echo "goal_bridge : 未运行"
     fi
+    local listen_state="否"
+    port_listening && listen_state="是（持有者：${owner:-未知/其他用户}）"
     echo "9000 监听   : ${listen_state}"
     if [ -n "${gp}" ]; then
         echo "GUI.py      : 运行中  pid=${gp}"
     else
         echo "GUI.py      : 未运行"
     fi
-    if pgrep -f "nav.launch.py" >/dev/null 2>&1; then
-        echo "导航三层    : 运行中"
+    echo "ROS 节点    : ${nav_count:-0} 个   topic: ${topic_count:-0} 个"
+    if [ -n "$(nav_pids)" ]; then
+        echo "导航栈      : 运行中 (robot_nav_all)"
     else
-        echo "导航三层    : 未运行"
+        echo "导航栈      : 未运行  (GUI 派单不会动)"
+    fi
+    if pgrep -f "map_server" >/dev/null 2>&1; then
+        echo "静态地图    : 运行中"
+    else
+        echo "静态地图    : 未运行"
+    fi
+    if pgrep -f "rplidar_node" >/dev/null 2>&1; then
+        echo "雷达        : 运行中"
+    else
+        echo "雷达        : 未运行"
+    fi
+    if pgrep -f "stm32_bridge" >/dev/null 2>&1; then
+        echo "底盘桥接    : 运行中"
+    else
+        echo "底盘桥接    : 未运行"
     fi
     if [ -n "$(tts_pids)" ]; then
         echo "语音播报    : 运行中  pid=$(tts_pids | tr '\n' ' ')"
@@ -351,15 +416,14 @@ status_all() {
 #  入口
 # ------------------------------------------------------------
 
-# 启动前先做日志轮转, 防止日志无限增长
 rotate_logs
 
 case "${1:-start}" in
     start)
         log "===== start ====="
         start_bridge
-        start_tts
         start_nav
+        start_tts
         start_gui
         status_all
         log "===== start done ====="
@@ -374,16 +438,39 @@ case "${1:-start}" in
         stop_all
         sleep 1
         start_bridge
-        start_tts
         start_nav
+        start_tts
         start_gui
         status_all
         ;;
     status)
         status_all
         ;;
+    start_nav)
+        log "===== start_nav ====="
+        start_nav
+        status_all
+        ;;
+    stop_nav)
+        log "===== stop_nav ====="
+        stop_nav
+        status_all
+        ;;
+    diag)
+        echo "===== ros2 node list ====="
+        timeout 6 ros2 node list 2>&1 || true
+        echo
+        echo "===== ros2 topic list ====="
+        timeout 6 ros2 topic list 2>&1 || true
+        echo
+        echo "===== 关键 topic 频率 (1 秒) ====="
+        for t in /scan /odom /cmd_vel /cmd_vel_plan /global_path /goal_pose /map; do
+            rate="$(timeout 4 ros2 topic hz "$t" 2>/dev/null | head -1)"
+            echo "  $t : ${rate:-no data}"
+        done
+        ;;
     *)
-        echo "用法: $0 {start|stop|restart|status}"
+        echo "用法: $0 {start|stop|restart|status|start_nav|stop_nav|diag}"
         exit 2
         ;;
 esac

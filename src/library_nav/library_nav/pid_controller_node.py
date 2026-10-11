@@ -82,6 +82,7 @@ class PIDControllerNode(Node):
         self.declare_parameter('max_linear_x', 0.4)   # 前后 m/s
         self.declare_parameter('max_linear_y', 0.25)  # 横移 m/s
         self.declare_parameter('max_angular_z', 0.5)  # 旋转 rad/s
+        self.declare_parameter('control_period', 0.05)  # 控制周期, 必须与 DWA 一致
 
         # ---------- PID 增益参数 ----------
         self.declare_parameter('kp_x', 2.0)
@@ -97,6 +98,21 @@ class PIDControllerNode(Node):
         self.mvx = self.get_parameter('max_linear_x').value
         self.mvy = self.get_parameter('max_linear_y').value
         self.mwz = self.get_parameter('max_angular_z').value
+        self.period = self.get_parameter('control_period').value
+
+        # 加速度限制按"每秒"定义(避免改频率后斜坡跟着变)
+        self.declare_parameter('slew_v_per_s', 2.0)   # 线加速 m/s²
+        self.declare_parameter('slew_w_per_s', 4.0)   # 角加速 rad/s²
+        self.declare_parameter('decel_boost', 3.0)    # 减速允许是加速的 N 倍(停得干脆)
+        self.declare_parameter('trim_limit', 0.15)     # PID 修正量上限, 反馈异常时仍安全
+        self.slew_v_per_s = self.get_parameter('slew_v_per_s').value
+        self.slew_w_per_s = self.get_parameter('slew_w_per_s').value
+        self.decel_boost = self.get_parameter('decel_boost').value
+        self.trim_limit = self.get_parameter('trim_limit').value
+        self.slew_v = self.slew_v_per_s * self.period    # 每周期允许变化量
+        self.slew_w = self.slew_w_per_s * self.period
+        self.slew_v_dec = self.slew_v * self.decel_boost
+        self.slew_w_dec = self.slew_w * self.decel_boost
 
         # ---------- 三个通道 PID ----------
         self.pid_x = PID(
@@ -132,19 +148,26 @@ class PIDControllerNode(Node):
         self.has_target = False
         self.has_feedback = False
 
-        # ---------- 软启动斜坡: 限制每周期(0.1s)输出变化量 ----------
-        # 电机启动瞬间电流冲击会拉垮供电, 用斜坡把 PWM 从 0 缓慢爬升。
-        # 与 DWA acc_x/acc_w 对齐(避免 PID 抢先限住 DWA 请求的速度):
-        #   slew_v=0.04 → 0.4 m/s², slew_w=0.08 → 0.8 rad/s²
-        self.declare_parameter('slew_v', 0.04)  # 线速度斜坡 m/cycle
-        self.declare_parameter('slew_w', 0.08)  # 角速度斜坡 rad/cycle
-        self.slew_v = self.get_parameter('slew_v').value
-        self.slew_w = self.get_parameter('slew_w').value
+        # 兼容旧参数: 如果上游 launch 还传 slew_v / slew_w, 尊重但不强制.
+        # 新版按 per-s 标准化, 这些字段变成"每秒"等价(供向后兼容).
+        self.declare_parameter('slew_v', -1.0)
+        self.declare_parameter('slew_w', -1.0)
+        legacy_v = self.get_parameter('slew_v').value
+        legacy_w = self.get_parameter('slew_w').value
+        if legacy_v > 0 and (self.get_parameter('slew_v_per_s').value == 2.0
+                              and legacy_v not in (0.08, 0.04)):
+            # 有人显式给了非默认 per-cycle 旋钮, 等价换算成 per-s
+            self.slew_v_per_s = legacy_v / self.period
+            self.slew_v = self.slew_v_per_s * self.period
+        if legacy_w > 0 and self.get_parameter('slew_w_per_s').value == 4.0:
+            self.slew_w_per_s = legacy_w / self.period
+            self.slew_w = self.slew_w_per_s * self.period
+
         self.prev_cmd_vx = 0.0
         self.prev_cmd_vy = 0.0
         self.prev_cmd_wz = 0.0
 
-        self.timer = self.create_timer(0.1, self.control_loop)
+        self.timer = self.create_timer(self.period, self.control_loop)
 
         self.last_log = 0.0
         self.get_logger().info(
@@ -188,13 +211,39 @@ class PIDControllerNode(Node):
         out_z = self.pid_z.update(self.target.angular.z,
                                   self.feedback.angular.z, now)
 
-        # 软启动: 限幅输出较上次的变化量
-        out_x = max(self.prev_cmd_vx - self.slew_v,
-                    min(self.prev_cmd_vx + self.slew_v, out_x))
-        out_y = max(self.prev_cmd_vy - self.slew_v,
-                    min(self.prev_cmd_vy + self.slew_v, out_y))
-        out_z = max(self.prev_cmd_wz - self.slew_w,
-                    min(self.prev_cmd_wz + self.slew_w, out_z))
+        # 关键改动: 前馈 + 有界 trim
+        # out = setpoint + bounded_pid_error
+        #   * 稳态精确(前馈抵消负载), 没有低速时的"追不上"滞后
+        #   * trim 限 ±trim_limit: 反馈异常(odom=0)时不会暴走
+        # 旧版是 out = kp*e, setpoint=0.5m/s 时车先慢后快,
+        # 配合 STM32 自身闭环 + 10Hz PID -> 明显一顿一顿的卡顿.
+        tgt_x = self.target.linear.x
+        tgt_y = self.target.linear.y
+        tgt_w = self.target.angular.z
+        trim_x = max(-self.trim_limit,
+                      min(self.trim_limit, out_x - tgt_x))
+        trim_y = max(-self.trim_limit,
+                      min(self.trim_limit, out_y - tgt_y))
+        trim_z = max(-self.trim_limit,
+                      min(self.trim_limit, out_z - tgt_w))
+        out_x = tgt_x + trim_x
+        out_y = tgt_y + trim_y
+        out_z = tgt_w + trim_z
+
+        # 非对称斜坡: 加速按 slew_v, 减速按 slew_v*decel_boost(停得干脆)
+        sv = (self.slew_v_dec if abs(out_x) < abs(self.prev_cmd_vx)
+              else self.slew_v)
+        sy = (self.slew_v_dec if abs(out_y) < abs(self.prev_cmd_vy)
+              else self.slew_v)
+        sw = (self.slew_w_dec if abs(out_z) < abs(self.prev_cmd_wz)
+              else self.slew_w)
+        out_x = max(self.prev_cmd_vx - sv,
+                    min(self.prev_cmd_vx + sv, out_x))
+        out_y = max(self.prev_cmd_vy - sy,
+                    min(self.prev_cmd_vy + sy, out_y))
+        out_z = max(self.prev_cmd_wz - sw,
+                    min(self.prev_cmd_wz + sw, out_z))
+
         self.prev_cmd_vx = out_x
         self.prev_cmd_vy = out_y
         self.prev_cmd_wz = out_z

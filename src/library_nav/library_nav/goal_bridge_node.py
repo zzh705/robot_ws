@@ -18,6 +18,10 @@ GUI 通过 TCP(127.0.0.1:9000)发送 JSON + \\n:
 坐标系: ROS map 系。坐标超出地图范围可拒绝(参数 reject_out_of_map,
         默认 True); 地图范围优先取自实时 /map 话题, 启动期无 /map 时
         退到 maps/<yaml>.yaml 静态读(launch 可显式传 map_yaml_path:=...).
+
+        **注意**: map_yaml_path 必须与 GUI 使用的 yaml 一致 (默认
+        maps/library.yaml). 否则会出现"GUI 上点到 → 桥拒收 →
+        派单位置不准"的诡异现象.
 """
 import json
 import socket
@@ -73,13 +77,14 @@ class GoalBridge(Node):
         self.port = self.declare_parameter('tcp_port', 9000).value
         self.declare_parameter('reject_out_of_map', True)
         self.reject_oob = self.get_parameter('reject_out_of_map').value
+        # 距边缘 < edge_warn_m 时仅提示, 不拒收 (A* 会自己夹)
+        self.declare_parameter('edge_warn_m', 0.5)
+        self.edge_warn = self.get_parameter('edge_warn_m').value
 
         # ============================================================
         # 地图范围(用于坐标范围校验)。
-        # 1) 启动期读 maps/room.yaml(可由 launch 改 map_yaml_path)静态获取
-        # 2) SLAM 在线后, /map 实时话题来一次就更准一次
+        # 默认 yaml 改为 maps/library.yaml, 与 GUI 一致
         # ============================================================
-        from pathlib import Path
         self.map_extents = None
         self._load_map_extents_from_yaml()
 
@@ -111,7 +116,8 @@ class GoalBridge(Node):
         self.get_logger().info(
             f'Listening on {self.host}:{self.port}; '
             f'reject_out_of_map={self.reject_oob}; '
-            f'map extents={self.map_extents}')
+            f'map extents={self.map_extents}; '
+            f'edge_warn_m={self.edge_warn}')
 
     # ============================================================
     # 地图范围: YAML 静态 + /map 实时
@@ -119,7 +125,8 @@ class GoalBridge(Node):
     def _load_map_extents_from_yaml(self):
         from pathlib import Path
         yaml_path = self.declare_parameter(
-            'map_yaml_path', '/home/sunrise/robot_ws/maps/room.yaml').value
+            'map_yaml_path',
+            '/home/sunrise/robot_ws/maps/library.yaml').value
         ox, oy, w, h, res = -10.0, -10.0, 0, 0, 0.05
         image_name = None
         try:
@@ -131,16 +138,19 @@ class GoalBridge(Node):
                     key, _, val = line.partition(':')
                     key, val = key.strip(), val.strip()
                     if key == 'resolution':
-                        try: res = float(val)
-                        except ValueError: pass
+                        try:
+                            res = float(val)
+                        except ValueError:
+                            pass
                     elif key == 'origin':
                         try:
                             nums = val.strip('[]').split(',')
                             ox, oy = float(nums[0]), float(nums[1])
-                        except Exception: pass
+                        except Exception:
+                            pass
                     elif key == 'image':
                         image_name = val
-            pgm_path = Path(yaml_path).parent / (image_name or 'room.pgm')
+            pgm_path = Path(yaml_path).parent / (image_name or 'library.pgm')
             with open(pgm_path, 'rb') as f:
                 head = b''
                 while head.count(b'\n') < 3:
@@ -216,7 +226,8 @@ class GoalBridge(Node):
         # ---- 新: 任意坐标 goto(地图点击 / 语音找书都走这条) ----
         if cmd == 'goto':
             try:
-                fx = float(x); fy = float(y)
+                fx = float(x)
+                fy = float(y)
             except (TypeError, ValueError):
                 self._reply(conn, False,
                             f'goto 缺坐标或非数值: x={x} y={y}')
@@ -226,6 +237,9 @@ class GoalBridge(Node):
                             f'目前仅支持 map 系, 收到 frame={frame}')
                 return
             # 范围校验: 避免 GUI 把 (0,0) 当成"起点"误发
+            # 注意: 这与"鼠标点到可通行区域"是两件事, 范围校验只挡
+            #       "绝对落在地图外"的脏数据; 在地图内但落在障碍上的目标
+            #       仍要交给 A* 节点做"clamp 到最近可走格"处理.
             if self.reject_oob and self.map_extents is not None:
                 ox, oy, fx_max, fy_max = self.map_extents
                 if not (ox <= fx <= fx_max and oy <= fy <= fy_max):
@@ -235,10 +249,27 @@ class GoalBridge(Node):
                         f'x∈[{ox:.2f},{fx_max:.2f}] '
                         f'y∈[{oy:.2f},{fy_max:.2f}]')
                     return
+            # 软提示: 目标在地图范围内但距边缘过近 (容易贴墙/过不去)
+            warn = ''
+            if self.map_extents is not None:
+                ox, oy, fx_max, fy_max = self.map_extents
+                too_close = []
+                if fx - ox < self.edge_warn:
+                    too_close.append('左')
+                if fx_max - fx < self.edge_warn:
+                    too_close.append('右')
+                if fy - oy < self.edge_warn:
+                    too_close.append('下')
+                if fy_max - fy < self.edge_warn:
+                    too_close.append('上')
+                if too_close:
+                    warn = (f' (目标靠{"/".join(too_close)}侧, '
+                            f'距边缘 <{self.edge_warn}m, A* 会自动夹到最近可走格)')
             self.publish_goal(book, f'({fx:.2f},{fy:.2f})', (fx, fy))
             self._reply(conn, True,
                         f'正在前往 ({fx:.2f},{fy:.2f})'
-                        + (f' ({book})' if book else ''))
+                        + (f' ({book})' if book else '')
+                        + warn)
             return
 
         # ---- 旧: 区号映射 find_book(保持兼容) ----

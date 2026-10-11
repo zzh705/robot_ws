@@ -26,7 +26,6 @@ setup(
     maintainer_email='root@todo.todo',
     description='Self-developed A* + DWA + PID navigation stack',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'global_planner_node = library_nav.global_planner_node:main',
