@@ -12,6 +12,11 @@
 #  默认 RUN_NAV=1：导航栈会拉起；GUI 点击地图后 /goal_pose 会真的驱动小车。
 #  只想调试 GUI 不动车：RUN_NAV=0 ./start_library_gui.sh start
 #
+#  建图模式（边跑边建图，用 slam_toolbox 而不是静态地图）：
+#    ENABLE_SLAM=true ./start_library_gui.sh start_nav
+#  第一次跑巡航建图建议把速度调小（默认 0.45/0.9）：
+#    ENABLE_SLAM=true MAX_LINEAR_X=0.25 MAX_ANGULAR_Z=0.6 ./start_library_gui.sh start_nav
+#
 #  用法：
 #    ./start_library_gui.sh            启动（默认）
 #    ./start_library_gui.sh start
@@ -62,6 +67,12 @@ RUN_GUI="${RUN_GUI:-1}"
 RUN_NAV="${RUN_NAV:-1}"
 RUN_TTS="${RUN_TTS:-1}"
 
+# 建图模式开关: true = slam_toolbox 边跑边建图(默认 false = 用 maps/library.yaml 静态地图)
+ENABLE_SLAM="${ENABLE_SLAM:-false}"
+# 速度上限(安全旋钮): 巡航建图建议 MAX_LINEAR_X=0.20~0.25
+MAX_LINEAR_X="${MAX_LINEAR_X:-0.45}"
+MAX_ANGULAR_Z="${MAX_ANGULAR_Z:-0.9}"
+
 mkdir -p "${LOG_DIR}"
 
 # 完整 ROS+TROS+ws 环境 (供 setsid 子 shell 用)
@@ -69,6 +80,19 @@ mkdir -p "${LOG_DIR}"
 ROS_ENV_HEAD='source /opt/ros/humble/setup.bash; source /opt/tros/humble/setup.bash; source /home/sunrise/robot_ws/install/setup.bash; export AMENT_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble:/home/sunrise/robot_ws/install; export LD_LIBRARY_PATH=/opt/tros/humble/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/usr/hobot/lib:/app/lib:/middleware/lib:/system/lib:/system/usr/lib:/lib:/usr/lib/aarch64-linux-gnu; export TROS_DISTRO=humble; export PATH=/opt/tros/humble/bin:/opt/ros/humble/bin:$PATH;'
 
 # 日志轮转: 单文件超 5MB 时压缩为 .1.gz, 依次顺延, 最多保留 3 份
+# Python 兼容补丁目录: 绕过 rootfs 上 distlib egg-info 目录块损坏
+# (ext4 校验和失败 -> ros2 CLI 启动即崩)。详见 tools/pyfix/sitecustomize.py。
+# 注意: 这是绕过; 文件系统仍需在方便时做 e2fsck。
+export PYTHONPATH="/home/sunrise/robot_ws/tools/pyfix:${PYTHONPATH}"
+# 关键: 还要追加进 ROS_ENV_HEAD 内部 —— 子进程经 setsid(以及可能的 su)启动,
+# 外部 export 的环境变量不保证传得进去(2026-10-11 实测: 外部 export 无效,
+# 导致 nav/bridge 子进程里 ros2 仍崩在 distlib 报错上)。
+ROS_ENV_HEAD="${ROS_ENV_HEAD} export PYTHONPATH=/home/sunrise/robot_ws/tools/pyfix:\$PYTHONPATH;"
+# 关键 2: ROS_ENV_HEAD 里那句 `export AMENT_PREFIX_PATH=...:/home/sunrise/robot_ws/install`
+# 会把 colcon 生成的"每包前缀"清单覆盖成工作区根目录, 于是子进程里
+#   ros2 launch/run 找不到 ws 里的包(实测: Package 'robot_bringup' not found)。
+# 因此在末尾再 source 一次 ws, 把每包前缀补回来。
+ROS_ENV_HEAD="${ROS_ENV_HEAD} source /home/sunrise/robot_ws/install/setup.bash;"
 rotate_logs() {
     for f in "${BRIDGE_LOG}" "${GUI_LOG}" "${MAIN_LOG}" "${NAV_LOG}" "${TTS_LOG}"; do
         [ -f "$f" ] || continue
@@ -213,12 +237,12 @@ start_nav() {
 
     setsid nohup bash -c "${ROS_ENV_HEAD} exec ros2 launch robot_bringup robot_nav_all.launch.py \
         map_yaml:=/home/sunrise/robot_ws/maps/library.yaml \
-        enable_slam:=false \
+        enable_slam:=${ENABLE_SLAM} \
         enable_nav:=true \
         enable_gamepad:=false \
         enable_rviz:=false \
-        max_linear_x:=0.45 \
-        max_angular_z:=0.9 \
+        max_linear_x:=${MAX_LINEAR_X} \
+        max_angular_z:=${MAX_ANGULAR_Z} \
         control_period:=0.05" \
         >> "${NAV_LOG}" 2>&1 &
 

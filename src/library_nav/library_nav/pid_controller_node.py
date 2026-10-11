@@ -24,13 +24,16 @@ class PID:
     """位置式 PID: out = kp*e + ki*∫e*dt + kd*de/dt"""
 
     def __init__(self, kp, ki, kd,
-                 out_min=-1.0, out_max=1.0, i_limit=10.0):
+                 out_min=-1.0, out_max=1.0, i_limit=10.0, fb_alpha=0.4):
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.out_min = out_min
         self.out_max = out_max
         self.i_limit = i_limit
+        # 反馈一阶低通系数: 0<α<=1, 越小越平滑(α=1 等于不滤波)
+        self.fb_alpha = fb_alpha
+        self.fb_filt = None
 
         self.integral = 0.0
         self.prev_error = 0.0
@@ -38,7 +41,19 @@ class PID:
 
     def update(self, setpoint, feedback, now):
         """setpoint=期望, feedback=反馈, now=秒时间戳"""
-        error = setpoint - feedback
+        # 反馈低通(EMA): /odom 的轮速在 20Hz 量级有 ±0.1~0.2 m/s 的抖动
+        # (编码器差分 + 下位机上报节奏), 直接进 P 项会被放大成命令抖动,
+        # 末端表现就是车剧烈抖动。先做一阶低通。
+        if self.fb_alpha >= 0.999:
+            fb = feedback
+        elif self.fb_filt is None:
+            self.fb_filt = feedback
+            fb = feedback
+        else:
+            self.fb_filt = (self.fb_alpha * feedback
+                            + (1.0 - self.fb_alpha) * self.fb_filt)
+            fb = self.fb_filt
+        error = setpoint - fb
 
         if self.prev_time is None:
             dt = 0.0
@@ -68,6 +83,7 @@ class PID:
         self.integral = 0.0
         self.prev_error = 0.0
         self.prev_time = None
+        self.fb_filt = None
 
 
 # ============================================================
@@ -85,13 +101,17 @@ class PIDControllerNode(Node):
         self.declare_parameter('control_period', 0.05)  # 控制周期, 必须与 DWA 一致
 
         # ---------- PID 增益参数 ----------
-        self.declare_parameter('kp_x', 2.0)
+        # ★ 增益修正(2026-10-11 实测): 原来是 2.0/2.0/1.5。环路增益=2 配上
+        #   10Hz 采样 + /odom 反馈抖动 + 下位机自身的速度环, 构成 ~5Hz 极限环
+        #   (实测 /cmd_vel 在 0/0.1/0.2 三级间 bang-bang)。降到 0.4 后修正量
+        #   温和(±trim_limit 仍未变), 稳态精度由前馈保证。
+        self.declare_parameter('kp_x', 0.4)
         self.declare_parameter('ki_x', 0.0)
         self.declare_parameter('kd_x', 0.0)
-        self.declare_parameter('kp_y', 2.0)
+        self.declare_parameter('kp_y', 0.4)
         self.declare_parameter('ki_y', 0.0)
         self.declare_parameter('kd_y', 0.0)
-        self.declare_parameter('kp_z', 1.5)
+        self.declare_parameter('kp_z', 0.4)
         self.declare_parameter('ki_z', 0.0)
         self.declare_parameter('kd_z', 0.0)
 
@@ -101,8 +121,10 @@ class PIDControllerNode(Node):
         self.period = self.get_parameter('control_period').value
 
         # 加速度限制按"每秒"定义(避免改频率后斜坡跟着变)
-        self.declare_parameter('slew_v_per_s', 2.0)   # 线加速 m/s²
-        self.declare_parameter('slew_w_per_s', 4.0)   # 角加速 rad/s²
+        # 斜坡也放慢(原 2.0/4.0): 每周期允许变化 = per_s × period。原来 2.0×0.05
+        # = 0.1/周期, 恰好把抖动量化成 0/0.1/0.2 三级, 进一步放大抖动观感。
+        self.declare_parameter('slew_v_per_s', 0.6)   # 线加速 m/s²
+        self.declare_parameter('slew_w_per_s', 1.5)   # 角加速 rad/s²
         self.declare_parameter('decel_boost', 3.0)    # 减速允许是加速的 N 倍(停得干脆)
         self.declare_parameter('trim_limit', 0.15)     # PID 修正量上限, 反馈异常时仍安全
         self.slew_v_per_s = self.get_parameter('slew_v_per_s').value
@@ -154,12 +176,12 @@ class PIDControllerNode(Node):
         self.declare_parameter('slew_w', -1.0)
         legacy_v = self.get_parameter('slew_v').value
         legacy_w = self.get_parameter('slew_w').value
-        if legacy_v > 0 and (self.get_parameter('slew_v_per_s').value == 2.0
+        if legacy_v > 0 and (self.get_parameter('slew_v_per_s').value == 0.6
                               and legacy_v not in (0.08, 0.04)):
             # 有人显式给了非默认 per-cycle 旋钮, 等价换算成 per-s
             self.slew_v_per_s = legacy_v / self.period
             self.slew_v = self.slew_v_per_s * self.period
-        if legacy_w > 0 and self.get_parameter('slew_w_per_s').value == 4.0:
+        if legacy_w > 0 and self.get_parameter('slew_w_per_s').value == 1.5:
             self.slew_w_per_s = legacy_w / self.period
             self.slew_w = self.slew_w_per_s * self.period
 
@@ -220,12 +242,18 @@ class PIDControllerNode(Node):
         tgt_x = self.target.linear.x
         tgt_y = self.target.linear.y
         tgt_w = self.target.angular.z
+        # ★ 修正(2026-10-11 实测): 原式 clamp(pid_out - 目标, ±limit) 把设定点
+        #   减了两次, 实测两个后果:
+        #     a) 稳态偏慢: 定速 0.15 m/s 车只跑 ~0.054 m/s(理论根 = 目标/3)
+        #     b) 极限环抖动: 误差过零时修正量在 ±limit 间来回跳, 叠加下位机
+        #        自身速度环 -> /cmd_vel 20~30Hz 跳 ±0.1~0.2 m/s, 车剧烈抖动
+        #   正确语义 = 前馈(直接给设定值) + 有界 P 修正(取自 PID 输出本身)。
         trim_x = max(-self.trim_limit,
-                      min(self.trim_limit, out_x - tgt_x))
+                      min(self.trim_limit, out_x))
         trim_y = max(-self.trim_limit,
-                      min(self.trim_limit, out_y - tgt_y))
+                      min(self.trim_limit, out_y))
         trim_z = max(-self.trim_limit,
-                      min(self.trim_limit, out_z - tgt_w))
+                      min(self.trim_limit, out_z))
         out_x = tgt_x + trim_x
         out_y = tgt_y + trim_y
         out_z = tgt_w + trim_z
