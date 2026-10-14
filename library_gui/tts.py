@@ -1,88 +1,99 @@
 #!/usr/bin/env python3
-"""library_gui/tts.py — 通过官方 hobot_tts 节点做语音播报。
+"""library_gui/tts.py — 文字转语音（离线 · 板载喇叭发声）
 
 链路:
-    GUI → 本模块 → 发布 std_msgs/String 到 /tts_text → hobot_tts → 扬声器
+    GUI 按钮 → 本模块 → espeak-ng 合成 → 重采样 48kHz/立体声 → aplay → 喇叭
 
-前提: hobot_tts 已在运行
-    ros2 run hobot_tts hobot_tts
-  模型需位于 /opt/tros/humble/lib/hobot_tts/tts_model
-  (hobot_tts 二进制里写死了这个相对路径)
+为什么不用官方 hobot_tts:
+    1) 本机 hobot_tts 二进制启动即段错误(rc=139)，当前不可用;
+    2) 板载 ES8326 codec 只吃 8000/16000/32000/48000Hz —— 22050/44100
+       会触发 "Clock coefficients do not match" 而静音;
+    3) espeak-ng 是板子上现成的离线 TTS，零依赖、断网可用。
 
-说明: 旧版只往 /tts_text 发消息, 而当时没有任何节点在跑 hobot_tts,
-所以点"🔊 播放"没有任何反应, 也看不到原因。
-现在统一返回 (ok, 说明), 由界面把失败原因显示出来。
+播放设备: 环境变量 TTS_DEVICE (默认 hw:0,0 = 板载 ES8326 圆孔)
+音色:     环境变量 TTS_VOICE  (默认 cmn = 中文普通话)
 """
+import audioop
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
+import wave
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-
-TOPIC = '/tts_text'
+VOICE = os.environ.get('TTS_VOICE', 'cmn')
+SPEAK_RATE = int(os.environ.get('TTS_SPEAK_RATE', '150'))
+OUT_RATE = 48000                      # 必须落在 ES8326 支持的档位
+DEVICE = os.environ.get('TTS_DEVICE', 'hw:0,0')
 
 _lock = threading.Lock()
-_node = None
-_pub = None
 
 
-def _get_publisher():
-    """惰性创建发布者(GUI 进程里没有别处 init rclpy)。"""
-    global _node, _pub
-    if _pub is not None:
-        return _node, _pub
-    if not rclpy.ok():
-        rclpy.init()
-    _node = Node('library_tts_client')
-    _pub = _node.create_publisher(String, TOPIC, 10)
-    return _node, _pub
+def _synth(text):
+    """espeak-ng 合成，返回临时 wav 路径。"""
+    fd, path = tempfile.mkstemp(prefix='tts_', suffix='.wav', dir='/tmp')
+    os.close(fd)
+    subprocess.run(
+        ['espeak-ng', '-v', VOICE, '-s', str(SPEAK_RATE), text, '-w', path],
+        check=True, capture_output=True, timeout=30)
+    return path
+
+
+def _to_48k_stereo(src):
+    """重采样成 48kHz 立体声（ES8326 只认这几档采样率，且必须 2 声道）。"""
+    fd, dst = tempfile.mkstemp(prefix='tts48_', suffix='.wav', dir='/tmp')
+    os.close(fd)
+    with wave.open(src, 'rb') as w:
+        data = w.readframes(w.getnframes())
+        sw, ch, fr = w.getsampwidth(), w.getnchannels(), w.getframerate()
+    if ch == 2:
+        data = audioop.tomono(data, sw, 0.5, 0.5)
+    if fr != OUT_RATE:
+        data, _ = audioop.ratecv(data, sw, 1, fr, OUT_RATE, None)
+    data = audioop.tostereo(data, sw, 1.0, 1.0)
+    with wave.open(dst, 'wb') as o:
+        o.setnchannels(2)
+        o.setsampwidth(sw)
+        o.setframerate(OUT_RATE)
+        o.writeframes(data)
+    return dst
 
 
 def speak(text):
-    """把 text 交给 hobot_tts 播报; 返回 (ok, 说明)。
-
-    只发一条 ROS 消息, 不等播完, 因此耗时很短
-    (但发现订阅者最多会等 2 秒, 用于给出"节点没启动"的明确错误)。
-    """
+    """把 text 合成语音并从喇叭播出；阻塞到播完。返回 (ok, 说明)。"""
     text = (text or '').strip()
     if not text:
         return False, '空文本'
+    if not shutil.which('espeak-ng'):
+        return False, '未安装 espeak-ng'
 
-    try:
-        with _lock:
-            node, pub = _get_publisher()
-            # 等 DDS 完成发现: 刚启动时订阅者可能还看不到
-            for _ in range(20):
-                if node.count_subscribers(TOPIC) > 0:
-                    break
-                rclpy.spin_once(node, timeout_sec=0.1)
-            n_sub = node.count_subscribers(TOPIC)
-
-            msg = String()
-            msg.data = str(text)
-            pub.publish(msg)
-            rclpy.spin_once(node, timeout_sec=0.2)
-    except Exception as e:
-        return False, f'发布 {TOPIC} 失败: {e}'
-
-    if n_sub == 0:
-        return False, (
-            '没有节点订阅 /tts_text —— hobot_tts 没在跑。请先执行: '
-            'ros2 run hobot_tts hobot_tts  (模型需解压到 '
-            '/opt/tros/humble/lib/hobot_tts/tts_model)'
-        )
-    return True, f'已发送 {len(text)} 字到 {TOPIC}'
+    with _lock:
+        src = dst = None
+        try:
+            src = _synth(text)
+            dst = _to_48k_stereo(src)
+            subprocess.run(['aplay', '-D', DEVICE, '-q', dst],
+                           check=True, capture_output=True, timeout=60)
+            return True, '已播报 %d 字' % len(text)
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b'').decode('utf-8', 'ignore').strip()
+            return False, '播放失败: %s' % (err or e)
+        except Exception as e:
+            return False, '语音播报失败: %s' % e
+        finally:
+            for p in (src, dst):
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
 
 def shutdown():
-    global _node, _pub
-    if _node is not None:
-        _node.destroy_node()
-        _node = None
-        _pub = None
-    if rclpy.ok():
-        rclpy.shutdown()
+    """兼容旧接口（已不使用 rclpy，无需清理）。"""
+    return None
 
 
 if __name__ == '__main__':
-    print(speak('你好，我是图书馆机器人'))
+    import sys
+    print(speak(sys.argv[1] if len(sys.argv) > 1 else '你好，我是图书馆机器人'))

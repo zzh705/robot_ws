@@ -1659,6 +1659,14 @@ class VoicePage(QWidget):
         self.input.setPlaceholderText('也可以打字提问，例如：三体在哪')
         self.input.returnPressed.connect(self.on_send_text)
         row.addWidget(self.input, 1)
+        speak_btn = QPushButton('🔊 朗读')
+        speak_btn.setFixedHeight(34)
+        speak_btn.setToolTip('把输入框里的文字直接转成语音播报（不经过 AI）')
+        speak_btn.setStyleSheet(
+            'background:#0F766E;color:white;border-radius:10px;'
+            'font-weight:700;padding:0 12px;')
+        speak_btn.clicked.connect(self.on_speak_text)
+        row.addWidget(speak_btn)
         send = QPushButton('发送')
         send.setFixedHeight(34)
         send.setStyleSheet(
@@ -1847,6 +1855,20 @@ class VoicePage(QWidget):
     # --------------------------------------------------------------
     def on_send_text(self):
         self._ask_text(self.input.text().strip())
+
+    def on_speak_text(self):
+        """🔊 朗读：把输入框里的文字直接转成语音从喇叭播报（不经过 AI）。"""
+        text = (self.input.text() or '').strip()
+        if not text:
+            self._append(
+                '<p style="color:#6B7280;">请先在输入框里输入要朗读的文字</p>')
+            self._scroll_end()
+            return
+        self._append(
+            f'<p style="color:#0F766E;">🔊 <b>朗读：</b>'
+            f'{html_escape(text)}</p>')
+        self._scroll_end()
+        self.speak(text)
 
     def _ask_text(self, text):
         if not text:
