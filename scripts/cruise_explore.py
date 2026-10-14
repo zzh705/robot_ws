@@ -18,7 +18,10 @@
 
 坐标约定(已实测确认)
     URDF: base_link→laser yaw = 180°, 所以 激光系角度 = 车身角度 + 180°
-    /goal_pose 用 'map' 系; 本栈假设 map≈odom(车在哪原点就在哪), 起跑时两者重合。
+    /goal_pose 用 'map' 系; 车的位置/朝向一律从 TF map->base_footprint 取,
+    目标 = 车位姿 + step * (cos(yaw + 车身角), sin(yaw + 车身角))。
+    (旧版直接拿 /odom 坐标 + 车身角当 map 系目标: map->odom 一漂就全歪,
+     2026-10-11 实测漂到 (1.1m, 1.2m, -116°) → 发的目标车根本不去。)
 
 用法
     python3 scripts/cruise_explore.py --dry-run          # 只看净空和打算去哪, 不动车
@@ -34,8 +37,11 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, OccupancyGrid
 from rclpy.node import Node
+from rclpy.duration import Duration
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy)
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformListener
 
 LASER_TO_BODY_DEG = 180.0     # URDF 里 base_link→laser 的 yaw(已实测确认)
 
@@ -57,6 +63,10 @@ class Cruise(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(OccupancyGrid, '/map', self.on_map, map_qos)
+        # 车位姿必须走 TF map->base_footprint: /goal_pose 是 map 系,
+        # 而 /odom 与 map 之间差一个会漂的 map->odom。
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
     # ---------- callbacks ----------
     def on_scan(self, msg):
@@ -94,20 +104,37 @@ class Cruise(Node):
         return out
 
     def pose(self):
-        return (self.odom[0], self.odom[1]) if self.odom else None
+        """车在 map 系的位姿 (x, y, yaw)."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                'map', 'base_footprint', Time(),
+                timeout=Duration(seconds=0.2))
+        except Exception:
+            return None
+        q = t.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return (t.transform.translation.x, t.transform.translation.y, yaw)
 
     def map_cells(self):
         if self.map is None:
             return None
         return sum(1 for v in self.map.data if v > 50)
 
-    def send_goal(self, x, y):
+    def send_goal(self, x, y, yaw=0.0):
+        """发 map 系目标; yaw 传"行进方向", 不要传 0.
+
+        旧版一律 orientation.w=1.0 (yaw=0) → 每个目标都隐含"最终朝 map +x",
+        目标在别的方向时 DWA 得先原地转到 +x 才肯前进, 实测 6s+ 还在 Aligning
+        (vx=0), 被本脚本的"6s 无位移"误判成卡死 → 白丢目标。
+        """
         m = PoseStamped()
         m.header.frame_id = 'map'
         m.header.stamp = self.get_clock().now().to_msg()
         m.pose.position.x = float(x)
         m.pose.position.y = float(y)
-        m.pose.orientation.w = 1.0
+        m.pose.orientation.z = math.sin(yaw / 2.0)
+        m.pose.orientation.w = math.cos(yaw / 2.0)
         self.goal_pub.publish(m)
 
 
@@ -131,7 +158,11 @@ def main():
         return 1
 
     p0 = node.pose()
-    print(f'起点(odom): x={p0[0]:+.2f} y={p0[1]:+.2f}')
+    if p0 is None:
+        print('!! 拿不到 map->base_footprint TF, SLAM/odom 没起来?')
+        return 1
+    print(f'起点(map): x={p0[0]:+.2f} y={p0[1]:+.2f} '
+          f'yaw={math.degrees(p0[2]):+.0f}°')
     print(f'地图已建格数: {node.map_cells()}')
 
     visited = []
@@ -143,6 +174,9 @@ def main():
         if not cl:
             print('!! 没有可用扫描'); break
         cur = node.pose()
+        if cur is None:
+            print('  !! map->base_footprint TF 丢失, 停止')
+            break
 
         # 排序打印(便于人工判断)
         ordered = sorted(cl.items(), key=lambda kv: -kv[1])
@@ -160,8 +194,10 @@ def main():
             step = min(clear - 0.35, args.max_step)
             if step < 0.35:
                 continue
-            gx = cur[0] + step * math.cos(math.radians(phi))
-            gy = cur[1] + step * math.sin(math.radians(phi))
+            # phi 是车身系方向 → 转到 map 系要叠加车头朝向 yaw
+            bearing = cur[2] + math.radians(phi)
+            gx = cur[0] + step * math.cos(bearing)
+            gy = cur[1] + step * math.sin(bearing)
             novelty = min([math.hypot(gx - vx, gy - vy) for vx, vy in visited],
                           default=99.0)
             score = min(clear, 2.5) + 0.6 * min(novelty, 3.0)
@@ -182,7 +218,7 @@ def main():
         visited.append((gx, gy))
         before = node.pose()
         cells0 = node.map_cells()
-        node.send_goal(gx, gy)
+        node.send_goal(gx, gy, bearing)
         print('  已发 /goal_pose, 等待执行 ...', flush=True)
 
         t_end = time.time() + args.dwell
@@ -197,11 +233,14 @@ def main():
             if math.hypot(cur[0] - gx, cur[1] - gy) < 0.20:
                 reached = True
                 break
-            if math.hypot(cur[0] - last[0], cur[1] - last[1]) > 0.04:
+            # "有进展"= 位移 >4cm **或** 转角 >9°: DWA 先原地 Aligning
+            # (vx=0) 再前进, 只看位移会把"正在转身"误判成卡死。
+            if (math.hypot(cur[0] - last[0], cur[1] - last[1]) > 0.04
+                    or abs(cur[2] - last[2]) > 0.15):
                 last = cur
                 stuck_since = time.time()
             elif time.time() - stuck_since > 6.0:
-                print('  卡死(6s 无位移) → 放弃该目标')
+                print('  卡死(6s 无位移且无转角) → 放弃该目标')
                 break
 
         moved = math.hypot(cur[0] - before[0], cur[1] - before[1])

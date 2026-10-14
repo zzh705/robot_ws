@@ -56,6 +56,7 @@ class ImuPublisher:
             self._sgn.append(1.0)
 
         self.pub = node.create_publisher(Imu, topic, 10)
+        self.last_gz = 0.0   # 最近一帧(重排/取反后)的 gyro z, 供 odometry 融合
 
     # ------------------------------------------------------------------
     def _remap(self, ax, ay, az, gx, gy, gz):
@@ -76,6 +77,7 @@ class ImuPublisher:
 
         (ax, ay, az), (gx, gy, gz) = self._remap(
             imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz)
+        self.last_gz = gz    # 与发出去的 /imu/data 同源, 避免两处各算一遍
 
         msg = Imu()
         msg.header.stamp = stamp.to_msg()

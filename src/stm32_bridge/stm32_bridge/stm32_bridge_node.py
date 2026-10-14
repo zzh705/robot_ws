@@ -35,7 +35,26 @@ class BridgeNode(Node):
         self.serial = SerialDriver(device=port, baudrate=115200)
         self.parser = FrameParser()
         self.encoder_vel = EncoderVelocity()
-        self.odom_pub = OdometryPublisher()
+
+        # ===== 里程计 yaw 的 IMU 融合参数 (A 方案) =====
+        # 只用 IMU 的 gyro z 修 yaw(不碰 x/y): 轮速差 yaw 打滑即偏,
+        # gyro 短期准但零偏必须标定 —— 静止实测 +0.144 rad/s ≈ +8.2°/s。
+        self.declare_parameter('use_imu_yaw', True)
+        self.declare_parameter('imu_yaw_weight', 0.98)
+        self.declare_parameter('imu_gyro_bias_lr', 0.02)
+        self.declare_parameter('imu_still_vx', 0.01)
+        self.declare_parameter('imu_still_wz', 0.02)
+        self.declare_parameter('imu_timeout', 0.5)
+        self.declare_parameter('imu_yaw_sign', 1.0)
+        self.odom_pub = OdometryPublisher(
+            use_imu_yaw=self.get_parameter('use_imu_yaw').value,
+            imu_yaw_weight=self.get_parameter('imu_yaw_weight').value,
+            imu_gyro_bias_lr=self.get_parameter('imu_gyro_bias_lr').value,
+            imu_still_vx=self.get_parameter('imu_still_vx').value,
+            imu_still_wz=self.get_parameter('imu_still_wz').value,
+            imu_timeout=self.get_parameter('imu_timeout').value,
+            imu_yaw_sign=self.get_parameter('imu_yaw_sign').value,
+        )
         self._log_ts = {}
 
         # ===== IMU (TYPE=0x04): 下位机 MPU6050 以 10Hz 上报 =====
@@ -137,6 +156,8 @@ class BridgeNode(Node):
 
             if self.imu_pub is not None:
                 self.imu_pub.publish(imu)
+                # 喂给里程计做 yaw 融合(用的就是发出去的那个 gyro z)
+                self.odom_pub.update_imu(self.imu_pub.last_gz)
                 if self.throttled('imu', 5.0):
                     self.get_logger().info(
                         'IMU: ' + self.imu_pub.summary(imu)

@@ -31,9 +31,13 @@ except ImportError:
     sys.exit("[ERR] 缺少 pygame, 请先: pip install pygame")
 
 # ---------------------------------------------------------------- 摇杆映射
+# 默认值对应 BETOP XF2 BFM DONGLE（2026-10-13 实测）:
+#   ax0=左X  ax1=左Y  ax2=右X  ax3=右Y  ax4/ax5=LT/RT(静息 -1)
+# 若换回北通 D2Z(XInput 轴序: ax2=LTrigger, ax3=右X), 启动时加:
+#   --ros-args -p axis_rotate:=3
 AXIS_FORWARD = 1    # 左摇杆 Y
 AXIS_STRAFE = 0     # 左摇杆 X
-AXIS_ROTATE = 3     # 右摇杆 X
+AXIS_ROTATE = 2     # 右摇杆 X（BETOP XF2）
 DEADZONE = 0.08
 SPEED_FORWARD = 1.0   # m/s
 SPEED_STRAFE = 1.0    # m/s
@@ -68,14 +72,31 @@ class GamepadCmdVel(Node):
         self.joy = None
         self.joy_warned = False
 
+        # 轴/键映射做成 ROS 参数，换手柄不用改代码
+        self.declare_parameter('axis_forward', AXIS_FORWARD)
+        self.declare_parameter('axis_strafe', AXIS_STRAFE)
+        self.declare_parameter('axis_rotate', AXIS_ROTATE)
+        self.declare_parameter('btn_estop', BTN_ESTOP)
+        self.declare_parameter('btn_boost', BTN_BOOST)
+        self.declare_parameter('deadzone', DEADZONE)
+        self.declare_parameter('speed_forward', SPEED_FORWARD)
+        self.declare_parameter('speed_strafe', SPEED_STRAFE)
+        self.declare_parameter('speed_rotate', SPEED_ROTATE)
+        g = lambda n: self.get_parameter(n).value
+        self.ax_f, self.ax_s, self.ax_r = g('axis_forward'), g('axis_strafe'), g('axis_rotate')
+        self.btn_e, self.btn_b = g('btn_estop'), g('btn_boost')
+        self.dz = g('deadzone')
+        self.v_f, self.v_s, self.v_r = g('speed_forward'), g('speed_strafe'), g('speed_rotate')
+
         pygame.init()
         pygame.joystick.init()
         self._find_joy(block_for=10.0)
 
         self.timer = self.create_timer(1.0 / PUB_HZ, self.tick)
         self.get_logger().info(
-            'gamepad_cmd_vel 就绪: 左摇杆=前进/横移, 右摇杆X=旋转, '
-            '按键0=急停, 按键1=加速x2；只发布 /cmd_vel（不再占用 STM32 串口）'
+            f'gamepad_cmd_vel 就绪: 前进=ax{self.ax_f} 横移=ax{self.ax_s} '
+            f'旋转=ax{self.ax_r} 急停=按键{self.btn_e} 加速=按键{self.btn_b}\n'
+            f'只发布 /cmd_vel（不占用 STM32 串口）'
         )
 
     def _find_joy(self, block_for=0.0):
@@ -98,7 +119,7 @@ class GamepadCmdVel(Node):
     def tick(self):
         pygame.event.pump()
         for ev in pygame.event.get():
-            if ev.type == pygame.JOYBUTTONDOWN and ev.button == BTN_ESTOP:
+            if ev.type == pygame.JOYBUTTONDOWN and ev.button == self.btn_e:
                 self.estop = not self.estop
                 self.get_logger().warn('急停' if self.estop else '解除急停')
 
@@ -109,10 +130,10 @@ class GamepadCmdVel(Node):
 
         if self.joy is not None and not self.estop:
             try:
-                fx = apply_deadzone(self.joy.get_axis(AXIS_FORWARD))
-                fy = apply_deadzone(self.joy.get_axis(AXIS_STRAFE))
-                fr = apply_deadzone(self.joy.get_axis(AXIS_ROTATE))
-                boost = 2.0 if self.joy.get_button(BTN_BOOST) else 1.0
+                fx = apply_deadzone(self.joy.get_axis(self.ax_f), self.dz)
+                fy = apply_deadzone(self.joy.get_axis(self.ax_s), self.dz)
+                fr = apply_deadzone(self.joy.get_axis(self.ax_r), self.dz)
+                boost = 2.0 if self.joy.get_button(self.btn_b) else 1.0
             except pygame.error:
                 # 手柄真实拔出：停车，等待重新插入后自动恢复
                 if not self.joy_warned:
@@ -122,12 +143,12 @@ class GamepadCmdVel(Node):
                 pygame.joystick.quit()
                 pygame.joystick.init()
             else:
-                vx = -fx * SPEED_FORWARD * boost   # pygame 上=-1 -> 前进为正
-                vy = fy * SPEED_STRAFE * boost
-                omega = fr * SPEED_ROTATE * boost
-                vx = max(-SPEED_FORWARD, min(SPEED_FORWARD, vx))
-                vy = max(-SPEED_STRAFE, min(SPEED_STRAFE, vy))
-                omega = max(-SPEED_ROTATE, min(SPEED_ROTATE, omega))
+                vx = -fx * self.v_f * boost   # pygame 上=-1 -> 前进为正
+                vy = fy * self.v_s * boost
+                omega = fr * self.v_r * boost
+                vx = max(-self.v_f, min(self.v_f, vx))
+                vy = max(-self.v_s, min(self.v_s, vy))
+                omega = max(-self.v_r, min(self.v_r, omega))
 
         vx, vy, omega = clamp_kinematic(vx, vy, omega)
 

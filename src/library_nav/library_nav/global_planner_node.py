@@ -185,6 +185,12 @@ class GlobalPlannerNode(Node):
         # 50 = 经典 nav2 默认; > 50 视为占据, <= 50 视为可走
         self.declare_parameter('occupancy_threshold', 50)
         self.declare_parameter('min_rebuild_interval', 2.0)
+        # 未知格(-1) 是否当障碍:
+        #   静态地图模式 true  (图外=危险, 别乱跑)
+        #   SLAM 在线建图必须 false —— 新图里未探索区域全是 unknown,
+        #   当障碍会让整张 costmap 94% 不可走, A* 永远 "no path"
+        #   (2026-10-11 实测: 5 个目标全部 A* failed, 车一步不动)
+        self.declare_parameter('unknown_is_obstacle', True)
 
         # ---------- 目标点吸附 ----------
         self.declare_parameter('snap_radius', 1.0)
@@ -201,6 +207,8 @@ class GlobalPlannerNode(Node):
         self.inflation_r = self.get_parameter('inflation_radius').value
         self.occ_thr = self.get_parameter('occupancy_threshold').value
         self.rebuild_interval = self.get_parameter('min_rebuild_interval').value
+        self.unknown_is_obstacle = self.get_parameter(
+            'unknown_is_obstacle').value
         self.snap_r = self.get_parameter('snap_radius').value
         self.snap_on = self.get_parameter('enable_snap').value
         self.scan_on = self.get_parameter('enable_scan_layer').value
@@ -270,7 +278,11 @@ class GlobalPlannerNode(Node):
         # 旧实现拿 raw PGM 灰度 0-254 与 60 比, 把整间房全判成障碍 (96.6% 占据),
         # 导致 A* 在一团黑里找不到路. 这里是该 bug 的根因.
         data = np.asarray(msg.data, dtype=np.int8).reshape((h, w))
-        occ = ((data > self.occ_thr) | (data < 0)).astype(np.uint8)
+        if self.unknown_is_obstacle:
+            occ = ((data > self.occ_thr) | (data < 0)).astype(np.uint8)
+        else:
+            # SLAM 在线建图: unknown 视作可走, 否则 A* 无路可走
+            occ = (data > self.occ_thr).astype(np.uint8)
 
         from scipy import ndimage
         inflate_px = max(1, int(round(self.inflation_r / res)))
@@ -321,7 +333,7 @@ class GlobalPlannerNode(Node):
             tx, ty, yaw = self._lookup_yaw('map', 'odom')
             cy, sy = math.cos(yaw), math.sin(yaw)
             scan_map = [(tx + px * cy - py * sy, ty + px * sy + py * cy)
-                        for (px, py, _) in fresh]
+                        for (px, py) in fresh]
         except Exception as e:
             self.get_logger().warn(
                 f'tf odom->map 不可用, 跳过 scan 软更新: {e}')
@@ -420,13 +432,15 @@ class GlobalPlannerNode(Node):
                 f'({snapped_x:+.2f},{snapped_y:+.2f})')
 
         # 2) 起点吸附(车当前位置贴墙时; 通常用不上, 兜底)
-        start_snapped, _, did_snap2, _ = \
+        #    snap_to_free 返回 4 元组 (x, y, snapped, dist); 旧版只接第一个
+        #    返回值, 把 float 当 tuple 用 → 一旦触发吸附就 TypeError 崩掉整个
+        #    A* 节点 (2026-10-11 实测: 巡航第 3 个目标起 planner 死亡, 车不动)。
+        start_sx, start_sy, did_snap2, _ = \
             self.astar.snap_to_free(*start_world, radius_m=self.snap_r)
         if did_snap2:
             self.get_logger().warn(
-                f'Start snapped to ({start_snapped[0]:+.2f},'
-                f'{start_snapped[1]:+.2f})')
-            start_world = start_snapped
+                f'Start snapped to ({start_sx:+.2f},{start_sy:+.2f})')
+            start_world = (start_sx, start_sy)
 
         # 3) A*
         self.get_logger().info(

@@ -116,6 +116,11 @@ def generate_launch_description():
             'rviz_config',
             default_value='/home/sunrise/robot_ws/config/robot.rviz',
             description='RViz2 配置'),
+        DeclareLaunchArgument(
+            'unknown_is_obstacle', default_value='true',
+            description='未知格(-1)是否当障碍: 静态地图 true; '
+                        'SLAM 在线建图必须传 false, 否则新图未探索区域全被当墙, '
+                        'A* 永远 "no path"(2026-10-11 实测)。'),
     ]
 
     # ----- 节点 -----
@@ -211,6 +216,8 @@ def generate_launch_description():
                 # 50 = nav2 默认; > 50 当障碍, <=50 当可走.
                 # 旧值 60 是错误的: 代码里会拿 raw PGM 0-254 灰度比 60, 导致整间房 96.6% 像素被判障碍.
                 'occupancy_threshold': 50,
+                'unknown_is_obstacle': LaunchConfiguration(
+                    'unknown_is_obstacle'),
                 # 软更新: 把 /scan 最近 N 秒的命中点叠到 costmap
                 'enable_scan_layer': True,
                 'scan_layer_decay_s': 1.0,

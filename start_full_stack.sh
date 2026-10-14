@@ -62,7 +62,7 @@ env_block() {
     echo "source '$WS_SETUP'"
     echo 'export AMENT_PREFIX_PATH='$APP'/install${AMENT_PREFIX_PATH:+:$AMENT_PREFIX_PATH}'
     echo 'export PYTHONPATH='$APP'/install/library_nav/lib/python3.10/site-packages:'$APP'/install/robot_description/lib/python3.10/site-packages:'$APP'/install/stm32_bridge/lib/python3.10/site-packages:'$APP'/install/robot_bringup/lib/python3.10/site-packages${PYTHONPATH:+:$PYTHONPATH}'
-    echo 'export LD_LIBRARY_PATH=/opt/tros/humble/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/usr/hobot/lib:/app/lib:/middleware/lib:/system/lib:/system/usr/lib:/lib:/usr/lib/aarch64-linux-gnu'
+    echo 'export LD_LIBRARY_PATH=/opt/tros/humble/lib:/opt/tros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/usr/hobot/lib:/app/lib:/middleware/lib:/system/usr/lib:/lib:/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}'
     echo 'export TROS_DISTRO=humble'
     echo 'export PATH=/opt/tros/humble/bin:/opt/ros/humble/bin:$PATH'
 }
